@@ -32,8 +32,8 @@ addons:
             description: "Build submitted via Travis CI"
         notification_email: joculator@gmail.com
         build_command_prepend: "cov-configure --comptype gcc --compiler aarch64-linux-gnu-gcc --template"
-        build_command: "make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_HAS_SCIF=y CONFIG_EARLY_PRINTK=salvator CONFIG_QEMU_XEN=n"
+        build_command: "make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_QEMU_XEN=n"
         branch_pattern: coverity-scan
 
 script:
-    - if [ "${COVERITY_SCAN_BRANCH}" != 1 ]; then make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_HAS_SCIF=y CONFIG_EARLY_PRINTK=salvator CONFIG_QEMU_XEN=n; fi
+    - if [ "${COVERITY_SCAN_BRANCH}" != 1 ]; then make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_QEMU_XEN=n; fi
