@@ -43,6 +43,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <inttypes.h>
+#include <limits.h>
 #ifdef __sun__
 #include <sys/byteorder.h>
 #define bswap_16(x) BSWAP_16(x)
@@ -71,8 +72,10 @@
 #include <xen/elfnote.h>
 #include <xen/libelf/libelf.h>
 
+#ifndef FUZZ_NO_LIBXC
 #include "xenctrl.h"
 #include "xc_private.h"
+#endif
 
 #define elf_msg(elf, fmt, args ... )                    \
     elf_call_log_callback(elf, 0, fmt , ## args );

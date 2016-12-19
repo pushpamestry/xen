@@ -29,9 +29,6 @@ struct hvm_emulate_ctxt {
     unsigned long seg_reg_accessed;
     unsigned long seg_reg_dirty;
 
-    bool_t exn_pending;
-    struct hvm_trap trap;
-
     uint32_t intr_shadow;
 
     bool_t set_context;
@@ -45,8 +42,6 @@ enum emul_kind {
 };
 
 int hvm_emulate_one(
-    struct hvm_emulate_ctxt *hvmemul_ctxt);
-int hvm_emulate_one_no_write(
     struct hvm_emulate_ctxt *hvmemul_ctxt);
 void hvm_emulate_one_vm_event(enum emul_kind kind,
     unsigned int trapnr,

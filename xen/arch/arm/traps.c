@@ -154,13 +154,13 @@ static void print_xen_info(void)
 }
 
 #ifdef CONFIG_ARM_32
-static inline bool_t is_zero_register(int reg)
+static inline bool is_zero_register(int reg)
 {
     /* There is no zero register for ARM32 */
-    return 0;
+    return false;
 }
 #else
-static inline bool_t is_zero_register(int reg)
+static inline bool is_zero_register(int reg)
 {
     /*
      * For store/load and sysreg instruction, the encoding 31 always
@@ -643,7 +643,7 @@ static const char *mode_string(uint32_t cpsr)
     };
     mode = cpsr & PSR_MODE_MASK;
 
-    if ( mode > ARRAY_SIZE(mode_strings) )
+    if ( mode >= ARRAY_SIZE(mode_strings) )
         return "Unknown";
     return mode_strings[mode] ? : "Unknown";
 }
@@ -1500,7 +1500,7 @@ static void do_trap_hypercall(struct cpu_user_regs *regs, register_t *nr,
 #endif
 }
 
-static bool_t check_multicall_32bit_clean(struct multicall_entry *multi)
+static bool check_multicall_32bit_clean(struct multicall_entry *multi)
 {
     int i;
 
@@ -1661,7 +1661,7 @@ static void advance_pc(struct cpu_user_regs *regs, const union hsr hsr)
 /* Read as zero and write ignore */
 static void handle_raz_wi(struct cpu_user_regs *regs,
                           int regidx,
-                          bool_t read,
+                          bool read,
                           const union hsr hsr,
                           int min_el)
 {
@@ -1680,7 +1680,7 @@ static void handle_raz_wi(struct cpu_user_regs *regs,
 /* Write only as write ignore */
 static void handle_wo_wi(struct cpu_user_regs *regs,
                          int regidx,
-                         bool_t read,
+                         bool read,
                          const union hsr hsr,
                          int min_el)
 {
@@ -1699,7 +1699,7 @@ static void handle_wo_wi(struct cpu_user_regs *regs,
 /* Read only as read as zero */
 static void handle_ro_raz(struct cpu_user_regs *regs,
                           int regidx,
-                          bool_t read,
+                          bool read,
                           const union hsr hsr,
                           int min_el)
 {
@@ -1872,6 +1872,18 @@ static void do_cp15_64(struct cpu_user_regs *regs,
      */
     case HSR_CPREG64(CNTP_CVAL):
         if ( !vtimer_emulate(regs, hsr) )
+            return inject_undef_exception(regs, hsr);
+        break;
+
+    /*
+     * HCR_EL2.FMO or HCR_EL2.IMO
+     *
+     * GIC Architecture Specification (IHI 0069C): Section 4.6.3
+     */
+    case HSR_CPREG64(ICC_SGI1R):
+    case HSR_CPREG64(ICC_ASGI1R):
+    case HSR_CPREG64(ICC_SGI0R):
+        if ( !vgic_emulate(regs, hsr) )
             return inject_undef_exception(regs, hsr);
         break;
 
@@ -2261,23 +2273,29 @@ static void do_sysreg(struct cpu_user_regs *regs,
     /*
      * HCR_EL2.FMO or HCR_EL2.IMO
      *
-     * ARMv8: GIC Architecture Specification (PRD03-GENC-010745 24.0)
-     *        Section 4.6.8.
+     * GIC Architecture Specification (IHI 0069C): Section 4.6.3
      */
     case HSR_SYSREG_ICC_SGI1R_EL1:
-        if ( !vgic_emulate(regs, hsr) )
-        {
-            dprintk(XENLOG_WARNING,
-                    "failed emulation of sysreg ICC_SGI1R_EL1 access\n");
-            return inject_undef64_exception(regs, hsr.len);
-        }
-        break;
-    case HSR_SYSREG_ICC_SGI0R_EL1:
     case HSR_SYSREG_ICC_ASGI1R_EL1:
-        /* TBD: Implement to support secure grp0/1 SGI forwarding */
-        dprintk(XENLOG_WARNING,
-                "Emulation of sysreg ICC_SGI0R_EL1/ASGI1R_EL1 not supported\n");
-        return inject_undef64_exception(regs, hsr.len);
+    case HSR_SYSREG_ICC_SGI0R_EL1:
+
+        if ( !vgic_emulate(regs, hsr) )
+            return inject_undef64_exception(regs, hsr.len);
+        break;
+
+    /*
+     *  ICC_SRE_EL2.Enable = 0
+     *
+     *  GIC Architecture Specification (IHI 0069C): Section 8.1.9
+     */
+    case HSR_SYSREG_ICC_SRE_EL1:
+        /*
+         * Trapped when the guest is using GICv2 whilst the platform
+         * interrupt controller is GICv3. In this case, the register
+         * should be emulate as RAZ/WI to tell the guest to use the GIC
+         * memory mapped interface (i.e GICv2 compatibility).
+         */
+        return handle_raz_wi(regs, regidx, hsr.sysreg.read, hsr, 1);
 
     /*
      * HCR_EL2.TIDCP

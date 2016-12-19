@@ -21,8 +21,8 @@
 
 struct transaction;
 
-void do_transaction_start(struct connection *conn, struct buffered_data *node);
-void do_transaction_end(struct connection *conn, struct buffered_data *in);
+int do_transaction_start(struct connection *conn, struct buffered_data *node);
+int do_transaction_end(struct connection *conn, struct buffered_data *in);
 
 struct transaction *transaction_lookup(struct connection *conn, uint32_t id);
 
@@ -30,8 +30,8 @@ struct transaction *transaction_lookup(struct connection *conn, uint32_t id);
 void transaction_entry_inc(struct transaction *trans, unsigned int domid);
 void transaction_entry_dec(struct transaction *trans, unsigned int domid);
 
-/* This node was changed: can fail and longjmp. */
-void add_change_node(struct transaction *trans, const char *node,
+/* This node was changed. */
+void add_change_node(struct connection *conn, struct node *node,
                      bool recurse);
 
 /* Return tdb context to use for this connection. */

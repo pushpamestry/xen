@@ -756,7 +756,7 @@ nsvm_vcpu_vmrun(struct vcpu *v, struct cpu_user_regs *regs)
     default:
         gdprintk(XENLOG_ERR,
             "nsvm_vcpu_vmentry failed, injecting #UD\n");
-        hvm_inject_hw_exception(TRAP_invalid_op, HVM_DELIVER_NO_ERROR_CODE);
+        hvm_inject_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC);
         /* Must happen after hvm_inject_hw_exception or it doesn't work right. */
         nv->nv_vmswitch_in_progress = 0;
         return 1;
@@ -821,7 +821,7 @@ nsvm_vcpu_vmexit_inject(struct vcpu *v, struct cpu_user_regs *regs,
 }
 
 int
-nsvm_vcpu_vmexit_trap(struct vcpu *v, const struct hvm_trap *trap)
+nsvm_vcpu_vmexit_event(struct vcpu *v, const struct x86_event *trap)
 {
     ASSERT(vcpu_nestedhvm(v).nv_vvmcx != NULL);
 
@@ -994,10 +994,11 @@ nsvm_vmcb_guest_intercepts_exitcode(struct vcpu *v,
 }
 
 bool_t
-nsvm_vmcb_guest_intercepts_trap(struct vcpu *v, unsigned int trapnr, int errcode)
+nsvm_vmcb_guest_intercepts_event(
+    struct vcpu *v, unsigned int vector, int errcode)
 {
     return nsvm_vmcb_guest_intercepts_exitcode(v,
-        guest_cpu_user_regs(), VMEXIT_EXCEPTION_DE + trapnr);
+        guest_cpu_user_regs(), VMEXIT_EXCEPTION_DE + vector);
 }
 
 static int
@@ -1580,7 +1581,7 @@ void svm_vmexit_do_stgi(struct cpu_user_regs *regs, struct vcpu *v)
     unsigned int inst_len;
 
     if ( !nestedhvm_enabled(v->domain) ) {
-        hvm_inject_hw_exception(TRAP_invalid_op, HVM_DELIVER_NO_ERROR_CODE);
+        hvm_inject_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC);
         return;
     }
 
@@ -1600,7 +1601,7 @@ void svm_vmexit_do_clgi(struct cpu_user_regs *regs, struct vcpu *v)
     vintr_t intr;
 
     if ( !nestedhvm_enabled(v->domain) ) {
-        hvm_inject_hw_exception(TRAP_invalid_op, HVM_DELIVER_NO_ERROR_CODE);
+        hvm_inject_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC);
         return;
     }
 

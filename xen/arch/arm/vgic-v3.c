@@ -31,6 +31,7 @@
 #include <asm/gic_v3_defs.h>
 #include <asm/vgic.h>
 #include <asm/vgic-emul.h>
+#include <asm/vreg.h>
 
 /*
  * PIDR2: Only bits[7:4] are not implementation defined. We are
@@ -1269,7 +1270,7 @@ write_reserved:
     return 1;
 }
 
-static int vgic_v3_to_sgi(struct vcpu *v, register_t sgir)
+static bool vgic_v3_to_sgi(struct vcpu *v, register_t sgir)
 {
     int virq;
     int irqmode;
@@ -1294,15 +1295,27 @@ static int vgic_v3_to_sgi(struct vcpu *v, register_t sgir)
         break;
     default:
         gprintk(XENLOG_WARNING, "Wrong irq mode in SGI1R_EL1 register\n");
-        return 0;
+        return false;
     }
 
     return vgic_to_sgi(v, sgir, sgi_mode, virq, &target);
 }
 
-static int vgic_v3_emulate_sysreg(struct cpu_user_regs *regs, union hsr hsr)
+static bool vgic_v3_emulate_sgi1r(struct cpu_user_regs *regs, uint64_t *r,
+                                  bool read)
 {
-    struct vcpu *v = current;
+    /* WO */
+    if ( !read )
+        return vgic_v3_to_sgi(current, *r);
+    else
+    {
+        gdprintk(XENLOG_WARNING, "Reading SGI1R_EL1 - WO register\n");
+        return false;
+    }
+}
+
+static bool vgic_v3_emulate_sysreg(struct cpu_user_regs *regs, union hsr hsr)
+{
     struct hsr_sysreg sysreg = hsr.sysreg;
 
     ASSERT (hsr.ec == HSR_EC_SYSREG);
@@ -1315,16 +1328,41 @@ static int vgic_v3_emulate_sysreg(struct cpu_user_regs *regs, union hsr hsr)
     switch ( hsr.bits & HSR_SYSREG_REGS_MASK )
     {
     case HSR_SYSREG_ICC_SGI1R_EL1:
-        /* WO */
-        if ( !sysreg.read )
-            return vgic_v3_to_sgi(v, get_user_reg(regs, sysreg.reg));
-        else
-        {
-            gprintk(XENLOG_WARNING, "Reading SGI1R_EL1 - WO register\n");
-            return 0;
-        }
+        return vreg_emulate_sysreg64(regs, hsr, vgic_v3_emulate_sgi1r);
+
     default:
-        return 0;
+        return false;
+    }
+}
+
+static bool vgic_v3_emulate_cp64(struct cpu_user_regs *regs, union hsr hsr)
+{
+    struct hsr_cp64 cp64 = hsr.cp64;
+
+    if ( cp64.read )
+        perfc_incr(vgic_cp64_reads);
+    else
+        perfc_incr(vgic_cp64_writes);
+
+    switch ( hsr.bits & HSR_CP64_REGS_MASK )
+    {
+    case HSR_CPREG64(ICC_SGI1R):
+        return vreg_emulate_cp64(regs, hsr, vgic_v3_emulate_sgi1r);
+    default:
+        return false;
+    }
+}
+
+static bool vgic_v3_emulate_reg(struct cpu_user_regs *regs, union hsr hsr)
+{
+    switch (hsr.ec)
+    {
+    case HSR_EC_SYSREG:
+        return vgic_v3_emulate_sysreg(regs, hsr);
+    case HSR_EC_CP15_64:
+        return vgic_v3_emulate_cp64(regs, hsr);
+    default:
+        return false;
     }
 }
 
@@ -1491,7 +1529,7 @@ static const struct vgic_ops v3_ops = {
     .vcpu_init   = vgic_v3_vcpu_init,
     .domain_init = vgic_v3_domain_init,
     .domain_free = vgic_v3_domain_free,
-    .emulate_sysreg  = vgic_v3_emulate_sysreg,
+    .emulate_reg  = vgic_v3_emulate_reg,
     /*
      * We use both AFF1 and AFF0 in (v)MPIDR. Thus, the max number of CPU
      * that can be supported is up to 4096(==256*16) in theory.

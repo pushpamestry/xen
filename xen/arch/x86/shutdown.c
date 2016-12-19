@@ -80,6 +80,9 @@ static void __init set_reboot_type(char *str)
             break;
         str++;
     }
+
+    if ( reboot_type == BOOT_EFI && !efi_enabled(EFI_RS) )
+        reboot_type = BOOT_INVALID;
 }
 custom_param("reboot", set_reboot_type);
 
@@ -116,7 +119,7 @@ void machine_halt(void)
 static void default_reboot_type(void)
 {
     if ( reboot_type == BOOT_INVALID )
-        reboot_type = efi_enabled ? BOOT_EFI
+        reboot_type = efi_enabled(EFI_RS) ? BOOT_EFI
                                   : acpi_disabled ? BOOT_KBD
                                                   : BOOT_ACPI;
 }

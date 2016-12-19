@@ -27,7 +27,11 @@
 
 struct x86_emulate_ctxt;
 
-/* Comprehensive enumeration of x86 segment registers. */
+/*
+ * Comprehensive enumeration of x86 segment registers.  Various bits of code
+ * rely on this order (general purpose before system, tr at the beginning of
+ * system).
+ */
 enum x86_segment {
     /* General purpose.  Matches the SReg3 encoding in opcode/ModRM bytes. */
     x86_seg_es,
@@ -36,21 +40,25 @@ enum x86_segment {
     x86_seg_ds,
     x86_seg_fs,
     x86_seg_gs,
-    /* System. */
+    /* System: Valid to use for implicit table references. */
     x86_seg_tr,
     x86_seg_ldtr,
     x86_seg_gdtr,
     x86_seg_idtr,
-    /*
-     * Dummy: used to emulate direct processor accesses to management
-     * structures (TSS, GDT, LDT, IDT, etc.) which use linear addressing
-     * (no segment component) and bypass usual segment- and page-level
-     * protection checks.
-     */
+    /* No Segment: For accesses which are already linear. */
     x86_seg_none
 };
 
-#define is_x86_user_segment(seg) ((unsigned)(seg) <= x86_seg_gs)
+static inline bool is_x86_user_segment(enum x86_segment seg)
+{
+    unsigned int idx = seg;
+
+    return idx <= x86_seg_gs;
+}
+static inline bool is_x86_system_segment(enum x86_segment seg)
+{
+    return seg >= x86_seg_tr && seg < x86_seg_none;
+}
 
 /* Classification of the types of software generated interrupts/exceptions. */
 enum x86_swint_type {
@@ -60,11 +68,40 @@ enum x86_swint_type {
     x86_swint_int,   /* 0xcd $n */
 };
 
-/* How much help is required with software event injection? */
+/*
+ * How much help is required with software event injection?
+ *
+ * All software events return from x86_emulate() with X86EMUL_EXCEPTION and
+ * fault-like semantics.  This just controls whether the emulator performs
+ * presence/dpl/etc checks and possibly raises exceptions instead.
+ */
 enum x86_swint_emulation {
     x86_swint_emulate_none, /* Hardware supports all software injection properly */
     x86_swint_emulate_icebp,/* Help needed with `icebp` (0xf1) */
     x86_swint_emulate_all,  /* Help needed with all software events */
+};
+
+/*
+ * x86 event types. This enumeration is valid for:
+ *  Intel VMX: {VM_ENTRY,VM_EXIT,IDT_VECTORING}_INTR_INFO[10:8]
+ *  AMD SVM: eventinj[10:8] and exitintinfo[10:8] (types 0-4 only)
+ */
+enum x86_event_type {
+    X86_EVENTTYPE_EXT_INTR,         /* External interrupt */
+    X86_EVENTTYPE_NMI = 2,          /* NMI */
+    X86_EVENTTYPE_HW_EXCEPTION,     /* Hardware exception */
+    X86_EVENTTYPE_SW_INTERRUPT,     /* Software interrupt (CD nn) */
+    X86_EVENTTYPE_PRI_SW_EXCEPTION, /* ICEBP (F1) */
+    X86_EVENTTYPE_SW_EXCEPTION,     /* INT3 (CC), INTO (CE) */
+};
+#define X86_EVENT_NO_EC (-1)        /* No error code. */
+
+struct x86_event {
+    int16_t       vector;
+    uint8_t       type;         /* X86_EVENTTYPE_* */
+    uint8_t       insn_len;     /* Instruction length */
+    int32_t       error_code;   /* X86_EVENT_NO_EC if n/a */
+    unsigned long cr2;          /* Only for TRAP_page_fault h/w exception */
 };
 
 /* 
@@ -109,8 +146,6 @@ struct __attribute__((__packed__)) segment_register {
 #define X86EMUL_EXCEPTION      2
  /* Retry the emulation for some reason. No state modified. */
 #define X86EMUL_RETRY          3
- /* (cmpxchg accessor): CMPXCHG failed. Maps to X86EMUL_RETRY in caller. */
-#define X86EMUL_CMPXCHG_FAILED 3
 
 /* FPU sub-types which may be requested via ->get_fpu(). */
 enum x86_emulate_fpu_type {
@@ -165,7 +200,10 @@ struct x86_emulate_ops
 
     /*
      * insn_fetch: Emulate fetch from instruction byte stream.
-     *  Parameters are same as for 'read'. @seg is always x86_seg_cs.
+     *  Except for @bytes, all parameters are the same as for 'read'.
+     *  @bytes: Access length (0 <= @bytes < 16, with zero meaning
+     *  "validate address only").
+     *  @seg is always x86_seg_cs.
      */
     int (*insn_fetch)(
         enum x86_segment seg,
@@ -271,7 +309,7 @@ struct x86_emulate_ops
      */
     int (*write_segment)(
         enum x86_segment seg,
-        struct segment_register *reg,
+        const struct segment_register *reg,
         struct x86_emulate_ctxt *ctxt);
 
     /*
@@ -365,19 +403,6 @@ struct x86_emulate_ops
         unsigned int *edx,
         struct x86_emulate_ctxt *ctxt);
 
-    /* inject_hw_exception */
-    int (*inject_hw_exception)(
-        uint8_t vector,
-        int32_t error_code,
-        struct x86_emulate_ctxt *ctxt);
-
-    /* inject_sw_interrupt */
-    int (*inject_sw_interrupt)(
-        enum x86_swint_type type,
-        uint8_t vector,
-        uint8_t insn_len,
-        struct x86_emulate_ctxt *ctxt);
-
     /*
      * get_fpu: Load emulated environment's FPU state onto processor.
      *  @exn_callback: On any FPU or SIMD exception, pass control to
@@ -412,6 +437,23 @@ struct cpu_user_regs;
 
 struct x86_emulate_ctxt
 {
+    /*
+     * Input-only state:
+     */
+
+    /* Software event injection support. */
+    enum x86_swint_emulation swint_emulate;
+
+    /* Set this if writes may have side effects. */
+    bool force_writeback;
+
+    /* Caller data that can be used by x86_emulate_ops' routines. */
+    void *data;
+
+    /*
+     * Input/output state:
+     */
+
     /* Register state before/after emulation. */
     struct cpu_user_regs *regs;
 
@@ -421,27 +463,26 @@ struct x86_emulate_ctxt
     /* Stack pointer width in bits (16, 32 or 64). */
     unsigned int sp_size;
 
-    /* Canonical opcode (see below). */
+    /*
+     * Output-only state:
+     */
+
+    /* Canonical opcode (see below) (valid only on X86EMUL_OKAY). */
     unsigned int opcode;
-
-    /* Software event injection support. */
-    enum x86_swint_emulation swint_emulate;
-
-    /* Set this if writes may have side effects. */
-    uint8_t force_writeback;
 
     /* Retirement state, set by the emulator (valid only on X86EMUL_OKAY). */
     union {
+        uint8_t raw;
         struct {
-            uint8_t hlt:1;          /* Instruction HLTed. */
-            uint8_t mov_ss:1;       /* Instruction sets MOV-SS irq shadow. */
-            uint8_t sti:1;          /* Instruction sets STI irq shadow. */
-        } flags;
-        uint8_t byte;
+            bool hlt:1;          /* Instruction HLTed. */
+            bool mov_ss:1;       /* Instruction sets MOV-SS irq shadow. */
+            bool sti:1;          /* Instruction sets STI irq shadow. */
+            bool singlestep:1;   /* Singlestepping was active. */
+        };
     } retire;
 
-    /* Caller data that can be used by x86_emulate_ops' routines. */
-    void *data;
+    bool event_pending;
+    struct x86_event event;
 };
 
 /*
@@ -513,12 +554,51 @@ struct x86_emulate_stub {
 
 /*
  * x86_emulate: Emulate an instruction.
- * Returns -1 on failure, 0 on success.
+ * Returns X86EMUL_* constants.
  */
 int
 x86_emulate(
     struct x86_emulate_ctxt *ctxt,
     const struct x86_emulate_ops *ops);
+
+#ifndef NDEBUG
+/*
+ * In debug builds, wrap x86_emulate() with some assertions about its expected
+ * behaviour.
+ */
+static inline int x86_emulate_wrapper(
+    struct x86_emulate_ctxt *ctxt,
+    const struct x86_emulate_ops *ops)
+{
+    unsigned long orig_eip = ctxt->regs->eip;
+    int rc = x86_emulate(ctxt, ops);
+
+    /* Retire flags should only be set for successful instruction emulation. */
+    if ( rc != X86EMUL_OKAY )
+        ASSERT(ctxt->retire.raw == 0);
+
+    /* All cases returning X86EMUL_EXCEPTION should have fault semantics. */
+    if ( rc == X86EMUL_EXCEPTION )
+        ASSERT(ctxt->regs->eip == orig_eip);
+
+    /*
+     * TODO: Make this true:
+     *
+    ASSERT(ctxt->event_pending == (rc == X86EMUL_EXCEPTION));
+     *
+     * Some codepaths still raise exceptions behind the back of the
+     * emulator. (i.e. return X86EMUL_EXCEPTION but without
+     * event_pending being set).  In the meantime, use a slightly
+     * relaxed check...
+     */
+    if ( ctxt->event_pending )
+        ASSERT(rc == X86EMUL_EXCEPTION);
+
+    return rc;
+}
+
+#define x86_emulate x86_emulate_wrapper
+#endif
 
 /*
  * Given the 'reg' portion of a ModRM byte, and a register block, return a
@@ -562,5 +642,65 @@ void x86_emulate_free_state(struct x86_emulate_state *state);
 #endif
 
 #endif
+
+static inline void x86_emul_hw_exception(
+    unsigned int vector, int error_code, struct x86_emulate_ctxt *ctxt)
+{
+    ASSERT(!ctxt->event_pending);
+
+    ctxt->event.vector = vector;
+    ctxt->event.type = X86_EVENTTYPE_HW_EXCEPTION;
+    ctxt->event.error_code = error_code;
+
+    ctxt->event_pending = true;
+}
+
+static inline void x86_emul_pagefault(
+    int error_code, unsigned long cr2, struct x86_emulate_ctxt *ctxt)
+{
+    ASSERT(!ctxt->event_pending);
+
+    ctxt->event.vector = 14; /* TRAP_page_fault */
+    ctxt->event.type = X86_EVENTTYPE_HW_EXCEPTION;
+    ctxt->event.error_code = error_code;
+    ctxt->event.cr2 = cr2;
+
+    ctxt->event_pending = true;
+}
+
+static inline void x86_emul_software_event(
+    enum x86_swint_type type, uint8_t vector, uint8_t insn_len,
+    struct x86_emulate_ctxt *ctxt)
+{
+    ASSERT(!ctxt->event_pending);
+
+    switch ( type )
+    {
+    case x86_swint_icebp:
+        ctxt->event.type = X86_EVENTTYPE_PRI_SW_EXCEPTION;
+        break;
+
+    case x86_swint_int3:
+    case x86_swint_into:
+        ctxt->event.type = X86_EVENTTYPE_SW_EXCEPTION;
+        break;
+
+    case x86_swint_int:
+        ctxt->event.type = X86_EVENTTYPE_SW_INTERRUPT;
+        break;
+    }
+
+    ctxt->event.vector = vector;
+    ctxt->event.error_code = X86_EVENT_NO_EC;
+    ctxt->event.insn_len = insn_len;
+
+    ctxt->event_pending = true;
+}
+
+static inline void x86_emul_reset_event(struct x86_emulate_ctxt *ctxt)
+{
+    ctxt->event_pending = false;
+    ctxt->event = (struct x86_event){};
+}
 
 #endif /* __X86_EMULATE_H__ */

@@ -84,7 +84,7 @@ static void colo_qdisk_setup(libxl__egc *egc, libxl__checkpoint_device *dev,
             crs->port = port;
         } else {
             if (strcmp(crs->host, host) || strcmp(crs->port, port)) {
-                LOG(ERROR, "The host and port of all disks must be the same");
+                LOGD(ERROR, domid, "The host and port of all disks must be the same");
                 rc = ERROR_FAIL;
                 goto out;
             }
@@ -169,9 +169,9 @@ static void colo_qdisk_save_preresume(libxl__egc *egc,
     /* qmp command doesn't support the driver "nbd" */
     node = GCSPRINTF("colo_node%d",
                      libxl__device_disk_dev_number(disk->vdev, NULL, NULL));
-    cmd = GCSPRINTF("drive_add buddy driver=replication,mode=primary,"
+    cmd = GCSPRINTF("drive_add -n buddy driver=replication,mode=primary,"
                     "file.driver=nbd,file.host=%s,file.port=%d,"
-                    "file.export=%s,node-name=%s,if=none",
+                    "file.export=%s,node-name=%s",
                     host, port, export_name, node);
     ret = libxl__qmp_hmp(gc, domid, cmd, NULL);
     if (ret)

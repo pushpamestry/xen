@@ -393,8 +393,8 @@ void vgic_enable_irqs(struct vcpu *v, uint32_t r, int n)
     }
 }
 
-int vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode, int virq,
-                const struct sgi_target *target)
+bool vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode,
+                 int virq, const struct sgi_target *target)
 {
     struct domain *d = v->domain;
     int vcpuid;
@@ -440,10 +440,10 @@ int vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode, int 
         gprintk(XENLOG_WARNING,
                 "vGICD:unhandled GICD_SGIR write %"PRIregister" \
                  with wrong mode\n", sgir);
-        return 0;
+        return false;
     }
 
-    return 1;
+    return true;
 }
 
 struct pending_irq *irq_to_pending(struct vcpu *v, unsigned int irq)
@@ -482,7 +482,7 @@ void vgic_vcpu_inject_irq(struct vcpu *v, unsigned int virq)
     uint8_t priority;
     struct pending_irq *iter, *n = irq_to_pending(v, virq);
     unsigned long flags;
-    bool_t running;
+    bool running;
 
     priority = vgic_get_virq_priority(v, virq);
 
@@ -546,24 +546,24 @@ void arch_evtchn_inject(struct vcpu *v)
     vgic_vcpu_inject_irq(v, v->domain->arch.evtchn_irq);
 }
 
-int vgic_emulate(struct cpu_user_regs *regs, union hsr hsr)
+bool vgic_emulate(struct cpu_user_regs *regs, union hsr hsr)
 {
     struct vcpu *v = current;
 
-    ASSERT(v->domain->arch.vgic.handler->emulate_sysreg != NULL);
+    ASSERT(v->domain->arch.vgic.handler->emulate_reg != NULL);
 
-    return v->domain->arch.vgic.handler->emulate_sysreg(regs, hsr);
+    return v->domain->arch.vgic.handler->emulate_reg(regs, hsr);
 }
 
-bool_t vgic_reserve_virq(struct domain *d, unsigned int virq)
+bool vgic_reserve_virq(struct domain *d, unsigned int virq)
 {
     if ( virq >= vgic_num_irqs(d) )
-        return 0;
+        return false;
 
     return !test_and_set_bit(virq, d->arch.vgic.allocated_irqs);
 }
 
-int vgic_allocate_virq(struct domain *d, bool_t spi)
+int vgic_allocate_virq(struct domain *d, bool spi)
 {
     int first, end;
     unsigned int virq;

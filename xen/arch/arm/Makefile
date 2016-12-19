@@ -43,7 +43,7 @@ obj-y += time.o
 obj-y += traps.o
 obj-y += vgic.o
 obj-y += vgic-v2.o
-obj-$(CONFIG_ARM_64) += vgic-v3.o
+obj-$(CONFIG_HAS_GICV3) += vgic-v3.o
 obj-y += vm_event.o
 obj-y += vtimer.o
 obj-y += vpsci.o
@@ -81,7 +81,7 @@ $(TARGET).axf: $(TARGET)-syms
 	$(OBJCOPY) --change-addresses +0x80000000 $< $@
 	$(STRIP) $@
 
-ifeq ($(lto),y)
+ifeq ($(CONFIG_LTO),y)
 # Gather all LTO objects together
 prelink_lto.o: $(ALL_OBJS)
 	$(LD_LTO) -r -o $@ $^

@@ -38,11 +38,9 @@ struct acpi_20_facs Facs = {
 #define ACPI_PM_TMR_BLK_BIT_WIDTH           0x20
 #define ACPI_PM_TMR_BLK_BIT_OFFSET          0x00
 
-struct acpi_20_fadt Fadt = {
+struct acpi_fadt Fadt = {
     .header = {
-        .signature    = ACPI_2_0_FADT_SIGNATURE,
-        .length       = sizeof(struct acpi_20_fadt),
-        .revision     = ACPI_2_0_FADT_REVISION,
+        .signature    = ACPI_FADT_SIGNATURE,
         .oem_id       = ACPI_OEM_ID, 
         .oem_table_id = ACPI_OEM_TABLE_ID,
         .oem_revision = ACPI_OEM_REVISION,
@@ -63,7 +61,6 @@ struct acpi_20_fadt Fadt = {
 
     .p_lvl2_lat = 0x0fff, /* >100,  means we do not support C2 state */
     .p_lvl3_lat = 0x0fff, /* >1000, means we do not support C3 state */
-    .iapc_boot_arch = ACPI_8042,
     .flags = (ACPI_PROC_C1 |
               ACPI_WBINVD |
               ACPI_FIX_RTC | ACPI_TMR_VAL_EXT |

@@ -814,7 +814,7 @@ static unsigned long get_cmos_time(void)
     static bool_t __read_mostly cmos_rtc_probe;
     boolean_param("cmos-rtc-probe", cmos_rtc_probe);
 
-    if ( efi_enabled )
+    if ( efi_enabled(EFI_RS) )
     {
         res = efi_get_time();
         if ( res )
@@ -1938,42 +1938,6 @@ int host_tsc_is_safe(void)
     return boot_cpu_has(X86_FEATURE_TSC_RELIABLE);
 }
 
-void cpuid_time_leaf(uint32_t sub_idx, uint32_t *eax, uint32_t *ebx,
-                      uint32_t *ecx, uint32_t *edx)
-{
-    struct domain *d = current->domain;
-    uint64_t offset;
-
-    switch ( sub_idx )
-    {
-    case 0: /* features */
-        *eax = (!!d->arch.vtsc << 0) |
-               (!!host_tsc_is_safe() << 1) |
-               (!!boot_cpu_has(X86_FEATURE_RDTSCP) << 2);
-        *ebx = d->arch.tsc_mode;
-        *ecx = d->arch.tsc_khz;
-        *edx = d->arch.incarnation;
-        break;
-    case 1: /* scale and offset */
-        if ( !d->arch.vtsc )
-            offset = d->arch.vtsc_offset;
-        else
-            /* offset already applied to value returned by virtual rdtscp */
-            offset = 0;
-        *eax = (uint32_t)offset;
-        *ebx = (uint32_t)(offset >> 32);
-        *ecx = d->arch.vtsc_to_ns.mul_frac;
-        *edx = (s8)d->arch.vtsc_to_ns.shift;
-        break;
-    case 2: /* physical cpu_khz */
-        *eax = cpu_khz;
-        *ebx = *ecx = *edx = 0;
-        break;
-    default:
-        *eax = *ebx = *ecx = *edx = 0;
-    }
-}
-
 /*
  * called to collect tsc-related data only for save file or live
  * migrate; called after last rdtsc is done on this incarnation
@@ -2181,12 +2145,11 @@ static void dump_softtsc(unsigned char key)
         if ( d->arch.incarnation )
             printk(",inc=%"PRIu32, d->arch.incarnation);
 #if !defined(NDEBUG) || defined(CONFIG_PERF_COUNTERS)
-        if ( !(d->arch.vtsc_kerncount | d->arch.vtsc_usercount) )
-            printk("\n");
-        else
-            printk(",vtsc count: %"PRIu64" kernel, %"PRIu64" user\n",
+        if ( d->arch.vtsc_kerncount | d->arch.vtsc_usercount )
+            printk(",vtsc count: %"PRIu64" kernel,%"PRIu64" user",
                    d->arch.vtsc_kerncount, d->arch.vtsc_usercount);
 #endif
+        printk("\n");
         domcnt++;
     }
 

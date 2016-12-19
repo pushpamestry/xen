@@ -25,8 +25,6 @@
 #include <xen/hvm/save.h>
 #include <asm/processor.h>
 
-#define HVM_DELIVER_NO_ERROR_CODE  (~0U)
-
 #ifndef NDEBUG
 #define DBG_LEVEL_0                 (1 << 0)
 #define DBG_LEVEL_1                 (1 << 1)
@@ -75,7 +73,7 @@ enum hvm_copy_result hvm_copy_from_guest_phys(
     void *buf, paddr_t paddr, int size);
 
 /*
- * Copy to/from a guest virtual address. @pfec should include PFEC_user_mode
+ * Copy to/from a guest linear address. @pfec should include PFEC_user_mode
  * if emulating a user-mode access (CPL=3). All other flags in @pfec are
  * managed by the called function: it is therefore optional for the caller
  * to set them.
@@ -85,27 +83,25 @@ enum hvm_copy_result hvm_copy_from_guest_phys(
  *  HVMCOPY_bad_gfn_to_mfn: Some guest physical address did not map to
  *                          ordinary machine memory.
  *  HVMCOPY_bad_gva_to_gfn: Some guest virtual address did not have a valid
- *                          mapping to a guest physical address. In this case
- *                          a page fault exception is automatically queued
- *                          for injection into the current HVM VCPU.
+ *                          mapping to a guest physical address.  The
+ *                          pagefault_info_t structure will be filled in if
+ *                          provided.
  */
-enum hvm_copy_result hvm_copy_to_guest_virt(
-    unsigned long vaddr, void *buf, int size, uint32_t pfec);
-enum hvm_copy_result hvm_copy_from_guest_virt(
-    void *buf, unsigned long vaddr, int size, uint32_t pfec);
-enum hvm_copy_result hvm_fetch_from_guest_virt(
-    void *buf, unsigned long vaddr, int size, uint32_t pfec);
+typedef struct pagefault_info
+{
+    unsigned long linear;
+    int ec;
+} pagefault_info_t;
 
-/*
- * As above (copy to/from a guest virtual address), but no fault is generated
- * when HVMCOPY_bad_gva_to_gfn is returned.
- */
-enum hvm_copy_result hvm_copy_to_guest_virt_nofault(
-    unsigned long vaddr, void *buf, int size, uint32_t pfec);
-enum hvm_copy_result hvm_copy_from_guest_virt_nofault(
-    void *buf, unsigned long vaddr, int size, uint32_t pfec);
-enum hvm_copy_result hvm_fetch_from_guest_virt_nofault(
-    void *buf, unsigned long vaddr, int size, uint32_t pfec);
+enum hvm_copy_result hvm_copy_to_guest_linear(
+    unsigned long addr, void *buf, int size, uint32_t pfec,
+    pagefault_info_t *pfinfo);
+enum hvm_copy_result hvm_copy_from_guest_linear(
+    void *buf, unsigned long addr, int size, uint32_t pfec,
+    pagefault_info_t *pfinfo);
+enum hvm_copy_result hvm_fetch_from_guest_linear(
+    void *buf, unsigned long addr, int size, uint32_t pfec,
+    pagefault_info_t *pfinfo);
 
 #define HVM_HCALL_completed  0 /* hypercall completed - no further action */
 #define HVM_HCALL_preempted  1 /* hypercall preempted - re-execute VMCALL */

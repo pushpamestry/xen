@@ -360,7 +360,7 @@ static int vmx_inst_check_privilege(struct cpu_user_regs *regs, int vmxop_check)
     else if ( !vcpu_2_nvmx(v).vmxon_region_pa )
         goto invalid_op;
 
-    vmx_get_segment_register(v, x86_seg_cs, &cs);
+    hvm_get_segment_register(v, x86_seg_cs, &cs);
 
     if ( (regs->eflags & X86_EFLAGS_VM) ||
          (hvm_long_mode_enabled(v) && cs.attr.fields.l == 0) )
@@ -380,7 +380,7 @@ vmexit:
     
 invalid_op:
     gdprintk(XENLOG_ERR, "vmx_inst_check_privilege: invalid_op\n");
-    hvm_inject_hw_exception(TRAP_invalid_op, HVM_DELIVER_NO_ERROR_CODE);
+    hvm_inject_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC);
     return X86EMUL_EXCEPTION;
 
 gp_fault:
@@ -419,13 +419,13 @@ static int decode_vmx_inst(struct cpu_user_regs *regs,
 
         if ( hvm_long_mode_enabled(v) )
         {
-            vmx_get_segment_register(v, x86_seg_cs, &seg);
+            hvm_get_segment_register(v, x86_seg_cs, &seg);
             mode_64bit = seg.attr.fields.l;
         }
 
         if ( info.fields.segment > VMX_SREG_GS )
             goto gp_fault;
-        vmx_get_segment_register(v, sreg_to_index[info.fields.segment], &seg);
+        hvm_get_segment_register(v, sreg_to_index[info.fields.segment], &seg);
         seg_base = seg.base;
 
         base = info.fields.base_reg_invalid ? 0 :
@@ -450,10 +450,17 @@ static int decode_vmx_inst(struct cpu_user_regs *regs,
               offset + size - 1 > seg.limit) )
             goto gp_fault;
 
-        if ( poperandS != NULL &&
-             hvm_copy_from_guest_virt(poperandS, base, size, 0)
-                  != HVMCOPY_okay )
-            return X86EMUL_EXCEPTION;
+        if ( poperandS != NULL )
+        {
+            pagefault_info_t pfinfo;
+            int rc = hvm_copy_from_guest_linear(poperandS, base, size,
+                                                0, &pfinfo);
+
+            if ( rc == HVMCOPY_bad_gva_to_gfn )
+                hvm_inject_page_fault(pfinfo.ec, pfinfo.linear);
+            if ( rc != HVMCOPY_okay )
+                return X86EMUL_EXCEPTION;
+        }
         decode->mem = base;
         decode->len = size;
     }
@@ -491,18 +498,19 @@ static void vmreturn(struct cpu_user_regs *regs, enum vmx_ops_result ops_res)
     regs->eflags = eflags;
 }
 
-bool_t nvmx_intercepts_exception(struct vcpu *v, unsigned int trap,
-                                 int error_code)
+bool_t nvmx_intercepts_exception(
+    struct vcpu *v, unsigned int vector, int error_code)
 {
     u32 exception_bitmap, pfec_match=0, pfec_mask=0;
     int r;
 
-    ASSERT ( trap < 32 );
+    ASSERT(vector < 32);
 
     exception_bitmap = get_vvmcs(v, EXCEPTION_BITMAP);
-    r = exception_bitmap & (1 << trap) ? 1: 0;
+    r = exception_bitmap & (1 << vector) ? 1: 0;
 
-    if ( trap == TRAP_page_fault ) {
+    if ( vector == TRAP_page_fault )
+    {
         pfec_match = get_vvmcs(v, PAGE_FAULT_ERROR_CODE_MATCH);
         pfec_mask  = get_vvmcs(v, PAGE_FAULT_ERROR_CODE_MASK);
         if ( (error_code & pfec_mask) != pfec_match )
@@ -1610,6 +1618,7 @@ int nvmx_handle_vmptrst(struct cpu_user_regs *regs)
     struct vcpu *v = current;
     struct vmx_inst_decoded decode;
     struct nestedvcpu *nvcpu = &vcpu_nestedhvm(v);
+    pagefault_info_t pfinfo;
     unsigned long gpa = 0;
     int rc;
 
@@ -1619,7 +1628,9 @@ int nvmx_handle_vmptrst(struct cpu_user_regs *regs)
 
     gpa = nvcpu->nv_vvmcxaddr;
 
-    rc = hvm_copy_to_guest_virt(decode.mem, &gpa, decode.len, 0);
+    rc = hvm_copy_to_guest_linear(decode.mem, &gpa, decode.len, 0, &pfinfo);
+    if ( rc == HVMCOPY_bad_gva_to_gfn )
+        hvm_inject_page_fault(pfinfo.ec, pfinfo.linear);
     if ( rc != HVMCOPY_okay )
         return X86EMUL_EXCEPTION;
 
@@ -1678,6 +1689,7 @@ int nvmx_handle_vmread(struct cpu_user_regs *regs)
 {
     struct vcpu *v = current;
     struct vmx_inst_decoded decode;
+    pagefault_info_t pfinfo;
     u64 value = 0;
     int rc;
 
@@ -1689,7 +1701,9 @@ int nvmx_handle_vmread(struct cpu_user_regs *regs)
 
     switch ( decode.type ) {
     case VMX_INST_MEMREG_TYPE_MEMORY:
-        rc = hvm_copy_to_guest_virt(decode.mem, &value, decode.len, 0);
+        rc = hvm_copy_to_guest_linear(decode.mem, &value, decode.len, 0, &pfinfo);
+        if ( rc == HVMCOPY_bad_gva_to_gfn )
+            hvm_inject_page_fault(pfinfo.ec, pfinfo.linear);
         if ( rc != HVMCOPY_okay )
             return X86EMUL_EXCEPTION;
         break;

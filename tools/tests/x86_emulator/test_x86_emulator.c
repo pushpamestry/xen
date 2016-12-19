@@ -1,15 +1,12 @@
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <xen/xen.h>
 #include <sys/mman.h>
 
-#include "x86_emulate/x86_emulate.h"
+#include "x86_emulate.h"
 #include "blowfish.h"
+
+#define verbose false /* Switch to true for far more logging. */
 
 static const struct {
     const void *code;
@@ -25,8 +22,6 @@ static const struct {
     { blowfish_x86_64, sizeof(blowfish_x86_64), 64, "blowfish" },
 #endif
 };
-
-#define MMAP_SZ 16384
 
 /* EFLAGS bit definitions. */
 #define EFLG_OF (1<<11)
@@ -46,6 +41,9 @@ static int read(
     unsigned int bytes,
     struct x86_emulate_ctxt *ctxt)
 {
+    if ( verbose )
+        printf("** %s(%u, %p,, %u,)\n", __func__, seg, (void *)offset, bytes);
+
     bytes_read += bytes;
     memcpy(p_data, (void *)offset, bytes);
     return X86EMUL_OKAY;
@@ -58,6 +56,9 @@ static int fetch(
     unsigned int bytes,
     struct x86_emulate_ctxt *ctxt)
 {
+    if ( verbose )
+        printf("** %s(%u, %p,, %u,)\n", __func__, seg, (void *)offset, bytes);
+
     memcpy(p_data, (void *)offset, bytes);
     return X86EMUL_OKAY;
 }
@@ -69,6 +70,9 @@ static int write(
     unsigned int bytes,
     struct x86_emulate_ctxt *ctxt)
 {
+    if ( verbose )
+        printf("** %s(%u, %p,, %u,)\n", __func__, seg, (void *)offset, bytes);
+
     memcpy((void *)offset, p_data, bytes);
     return X86EMUL_OKAY;
 }
@@ -81,131 +85,10 @@ static int cmpxchg(
     unsigned int bytes,
     struct x86_emulate_ctxt *ctxt)
 {
+    if ( verbose )
+        printf("** %s(%u, %p,, %u,)\n", __func__, seg, (void *)offset, bytes);
+
     memcpy((void *)offset, new, bytes);
-    return X86EMUL_OKAY;
-}
-
-static int cpuid(
-    unsigned int *eax,
-    unsigned int *ebx,
-    unsigned int *ecx,
-    unsigned int *edx,
-    struct x86_emulate_ctxt *ctxt)
-{
-    unsigned int leaf = *eax;
-
-    asm ("cpuid" : "+a" (*eax), "+c" (*ecx), "=d" (*edx), "=b" (*ebx));
-
-    /* The emulator doesn't itself use MOVBE, so we can always run the test. */
-    if ( leaf == 1 )
-        *ecx |= 1U << 22;
-
-    return X86EMUL_OKAY;
-}
-
-#define cache_line_size() ({ \
-    unsigned int eax = 1, ebx, ecx = 0, edx; \
-    cpuid(&eax, &ebx, &ecx, &edx, NULL); \
-    edx & (1U << 19) ? (ebx >> 5) & 0x7f8 : 0; \
-})
-
-#define cpu_has_mmx ({ \
-    unsigned int eax = 1, ecx = 0, edx; \
-    cpuid(&eax, &ecx, &ecx, &edx, NULL); \
-    (edx & (1U << 23)) != 0; \
-})
-
-#define cpu_has_sse ({ \
-    unsigned int eax = 1, ecx = 0, edx; \
-    cpuid(&eax, &ecx, &ecx, &edx, NULL); \
-    (edx & (1U << 25)) != 0; \
-})
-
-#define cpu_has_sse2 ({ \
-    unsigned int eax = 1, ecx = 0, edx; \
-    cpuid(&eax, &ecx, &ecx, &edx, NULL); \
-    (edx & (1U << 26)) != 0; \
-})
-
-#define cpu_has_xsave ({ \
-    unsigned int eax = 1, ecx = 0; \
-    cpuid(&eax, &eax, &ecx, &eax, NULL); \
-    /* Intentionally checking OSXSAVE here. */ \
-    (ecx & (1U << 27)) != 0; \
-})
-
-static inline uint64_t xgetbv(uint32_t xcr)
-{
-    uint32_t lo, hi;
-
-    asm ( ".byte 0x0f, 0x01, 0xd0" : "=a" (lo), "=d" (hi) : "c" (xcr) );
-
-    return ((uint64_t)hi << 32) | lo;
-}
-
-#define cpu_has_avx ({ \
-    unsigned int eax = 1, ecx = 0; \
-    cpuid(&eax, &eax, &ecx, &eax, NULL); \
-    if ( !(ecx & (1U << 27)) || ((xgetbv(0) & 6) != 6) ) \
-        ecx = 0; \
-    (ecx & (1U << 28)) != 0; \
-})
-
-#define cpu_has_avx2 ({ \
-    unsigned int eax = 1, ebx, ecx = 0; \
-    cpuid(&eax, &ebx, &ecx, &eax, NULL); \
-    if ( !(ecx & (1U << 27)) || ((xgetbv(0) & 6) != 6) ) \
-        ebx = 0; \
-    else { \
-        eax = 7, ecx = 0; \
-        cpuid(&eax, &ebx, &ecx, &eax, NULL); \
-    } \
-    (ebx & (1U << 5)) != 0; \
-})
-
-static int read_cr(
-    unsigned int reg,
-    unsigned long *val,
-    struct x86_emulate_ctxt *ctxt)
-{
-    /* Fake just enough state for the emulator's _get_fpu() to be happy. */
-    switch ( reg )
-    {
-    case 0:
-        *val = 0x00000001; /* PE */
-        return X86EMUL_OKAY;
-
-    case 4:
-        /* OSFXSR, OSXMMEXCPT, and maybe OSXSAVE */
-        *val = 0x00000600 | (cpu_has_xsave ? 0x00040000 : 0);
-        return X86EMUL_OKAY;
-    }
-
-    return X86EMUL_UNHANDLEABLE;
-}
-
-int get_fpu(
-    void (*exception_callback)(void *, struct cpu_user_regs *),
-    void *exception_callback_arg,
-    enum x86_emulate_fpu_type type,
-    struct x86_emulate_ctxt *ctxt)
-{
-    switch ( type )
-    {
-    case X86EMUL_FPU_fpu:
-        break;
-    case X86EMUL_FPU_mmx:
-        if ( cpu_has_mmx )
-            break;
-    case X86EMUL_FPU_xmm:
-        if ( cpu_has_sse )
-            break;
-    case X86EMUL_FPU_ymm:
-        if ( cpu_has_avx )
-            break;
-    default:
-        return X86EMUL_UNHANDLEABLE;
-    }
     return X86EMUL_OKAY;
 }
 
@@ -214,9 +97,9 @@ static struct x86_emulate_ops emulops = {
     .insn_fetch = fetch,
     .write      = write,
     .cmpxchg    = cmpxchg,
-    .cpuid      = cpuid,
-    .read_cr    = read_cr,
-    .get_fpu    = get_fpu,
+    .cpuid      = emul_test_cpuid,
+    .read_cr    = emul_test_read_cr,
+    .get_fpu    = emul_test_get_fpu,
 };
 
 int main(int argc, char **argv)
@@ -225,12 +108,14 @@ int main(int argc, char **argv)
     struct cpu_user_regs regs;
     char *instr;
     unsigned int *res, i, j;
-    unsigned long sp;
     bool stack_exec;
     int rc;
 #ifndef __x86_64__
     unsigned int bcdres_native, bcdres_emul;
 #endif
+
+    /* Disable output buffering. */
+    setbuf(stdout, NULL);
 
     ctxt.regs = &regs;
     ctxt.force_writeback = 0;
@@ -246,17 +131,12 @@ int main(int argc, char **argv)
     }
     instr = (char *)res + 0x100;
 
-#ifdef __x86_64__
-    asm ("movq %%rsp, %0" : "=g" (sp));
-#else
-    asm ("movl %%esp, %0" : "=g" (sp));
-#endif
-    stack_exec = mprotect((void *)(sp & -0x1000L) - (MMAP_SZ - 0x1000),
-                          MMAP_SZ, PROT_READ|PROT_WRITE|PROT_EXEC) == 0;
+    stack_exec = emul_test_make_stack_executable();
+
     if ( !stack_exec )
         printf("Warning: Stack could not be made executable (%d).\n", errno);
 
-    printf("%-40s", "Testing addl %%ecx,(%%eax)...");
+    printf("%-40s", "Testing addl %ecx,(%eax)...");
     instr[0] = 0x01; instr[1] = 0x08;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -271,7 +151,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing addl %%ecx,%%eax...");
+    printf("%-40s", "Testing addl %ecx,%eax...");
     instr[0] = 0x01; instr[1] = 0xc8;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -286,7 +166,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing xorl (%%eax),%%ecx...");
+    printf("%-40s", "Testing xorl (%eax),%ecx...");
     instr[0] = 0x33; instr[1] = 0x08;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -304,7 +184,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing movl (%%eax),%%ecx...");
+    printf("%-40s", "Testing movl (%eax),%ecx...");
     instr[0] = 0x8b; instr[1] = 0x08;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -318,7 +198,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing lock cmpxchgb %%cl,(%%ebx)...");
+    printf("%-40s", "Testing lock cmpxchgb %cl,(%ebx)...");
     instr[0] = 0xf0; instr[1] = 0x0f; instr[2] = 0xb0; instr[3] = 0x0b;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -334,7 +214,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing lock cmpxchgb %%cl,(%%ebx)...");
+    printf("%-40s", "Testing lock cmpxchgb %cl,(%ebx)...");
     instr[0] = 0xf0; instr[1] = 0x0f; instr[2] = 0xb0; instr[3] = 0x0b;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -351,7 +231,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing xchgl %%ecx,(%%eax)...");
+    printf("%-40s", "Testing xchgl %ecx,(%eax)...");
     instr[0] = 0x87; instr[1] = 0x08;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -366,7 +246,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing lock cmpxchgl %%ecx,(%%ebx)...");
+    printf("%-40s", "Testing lock cmpxchgl %ecx,(%ebx)...");
     instr[0] = 0xf0; instr[1] = 0x0f; instr[2] = 0xb1; instr[3] = 0x0b;
     regs.eflags = 0x200;
     *res        = 0x923456AA;
@@ -484,7 +364,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing movsxbd (%%eax),%%ecx...");
+    printf("%-40s", "Testing movsxbd (%eax),%ecx...");
     instr[0] = 0x0f; instr[1] = 0xbe; instr[2] = 0x08;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -500,7 +380,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing movzxwd (%%eax),%%ecx...");
+    printf("%-40s", "Testing movzxwd (%eax),%ecx...");
     instr[0] = 0x0f; instr[1] = 0xb7; instr[2] = 0x08;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -517,7 +397,7 @@ int main(int argc, char **argv)
     printf("okay\n");
 
 #ifndef __x86_64__
-    printf("%-40s", "Testing arpl %cx,(%%eax)...");
+    printf("%-40s", "Testing arpl %cx,(%eax)...");
     instr[0] = 0x63; instr[1] = 0x08;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -533,7 +413,7 @@ int main(int argc, char **argv)
          (regs.eip != (unsigned long)&instr[2]) )
         goto fail;
 #else
-    printf("%-40s", "Testing movsxd (%%rax),%%rcx...");
+    printf("%-40s", "Testing movsxd (%rax),%rcx...");
     instr[0] = 0x48; instr[1] = 0x63; instr[2] = 0x08;
     regs.eip    = (unsigned long)&instr[0];
     regs.ecx    = 0x123456789abcdef;
@@ -554,7 +434,7 @@ int main(int argc, char **argv)
 #endif
     printf("okay\n");
 
-    printf("%-40s", "Testing xadd %%ax,(%%ecx)...");
+    printf("%-40s", "Testing xadd %ax,(%ecx)...");
     instr[0] = 0x66; instr[1] = 0x0f; instr[2] = 0xc1; instr[3] = 0x01;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -570,7 +450,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing dec %%ax...");
+    printf("%-40s", "Testing dec %ax...");
 #ifndef __x86_64__
     instr[0] = 0x66; instr[1] = 0x48;
 #else
@@ -587,7 +467,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing lea 8(%%ebp),%%eax...");
+    printf("%-40s", "Testing lea 8(%ebp),%eax...");
     instr[0] = 0x8d; instr[1] = 0x45; instr[2] = 0x08;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -601,8 +481,8 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing daa/das (all inputs)...");
 #ifndef __x86_64__
+    printf("%-40s", "Testing daa/das (all inputs)...");
     /* Bits 0-7: AL; Bit 8: EFLG_AF; Bit 9: EFLG_CF; Bit 10: DAA vs. DAS. */
     for ( i = 0; i < 0x800; i++ )
     {
@@ -667,9 +547,7 @@ int main(int argc, char **argv)
         }
     }
     printf("okay\n");
-#else
-    printf("skipped\n");
-
+#else /* x86-64 */
     printf("%-40s", "Testing cmovz %ecx,%eax...");
     instr[0] = 0x0f; instr[1] = 0x44; instr[2] = 0xc1;
     regs.eflags = 0x200;
@@ -686,7 +564,7 @@ int main(int argc, char **argv)
     printf("okay\n");
 #endif
 
-    printf("%-40s", "Testing movbe (%%ecx),%%eax...");
+    printf("%-40s", "Testing movbe (%ecx),%eax...");
     instr[0] = 0x0f; instr[1] = 0x38; instr[2] = 0xf0; instr[3] = 0x01;
     regs.eflags = 0x200;
     regs.eip    = (unsigned long)&instr[0];
@@ -702,7 +580,7 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
-    printf("%-40s", "Testing movbe %%ax,(%%ecx)...");
+    printf("%-40s", "Testing movbe %ax,(%ecx)...");
     instr[0] = 0x66; instr[1] = 0x0f; instr[2] = 0x38; instr[3] = 0xf1; instr[4] = 0x01;
     regs.eip = (unsigned long)&instr[0];
     rc = x86_emulate(&ctxt, &emulops);
@@ -771,7 +649,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing movq %%xmm0,32(%%ecx)...");
+    printf("%-40s", "Testing movq %xmm0,32(%ecx)...");
     if ( stack_exec && cpu_has_sse2 )
     {
         decl_insn(movq_to_mem2);
@@ -795,7 +673,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing vmovq %%xmm1,32(%%edx)...");
+    printf("%-40s", "Testing vmovq %xmm1,32(%edx)...");
     if ( stack_exec && cpu_has_avx )
     {
         decl_insn(vmovq_to_mem);
@@ -1031,7 +909,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing movd %%mm3,32(%%ecx)...");
+    printf("%-40s", "Testing movd %mm3,32(%ecx)...");
     if ( stack_exec && cpu_has_mmx )
     {
         decl_insn(movd_to_mem);
@@ -1055,7 +933,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing movd %%xmm2,32(%%edx)...");
+    printf("%-40s", "Testing movd %xmm2,32(%edx)...");
     if ( stack_exec && cpu_has_sse2 )
     {
         decl_insn(movd_to_mem2);
@@ -1079,7 +957,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing vmovd %%xmm1,32(%%ecx)...");
+    printf("%-40s", "Testing vmovd %xmm1,32(%ecx)...");
     if ( stack_exec && cpu_has_avx )
     {
         decl_insn(vmovd_to_mem);
@@ -1103,7 +981,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing movd %%mm3,%%ebx...");
+    printf("%-40s", "Testing movd %mm3,%ebx...");
     if ( stack_exec && cpu_has_mmx )
     {
         decl_insn(movd_to_reg);
@@ -1133,7 +1011,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing movd %%xmm2,%%ebx...");
+    printf("%-40s", "Testing movd %xmm2,%ebx...");
     if ( stack_exec && cpu_has_sse2 )
     {
         decl_insn(movd_to_reg2);
@@ -1158,7 +1036,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing vmovd %%xmm1,%%ebx...");
+    printf("%-40s", "Testing vmovd %xmm1,%ebx...");
     if ( stack_exec && cpu_has_avx )
     {
         decl_insn(vmovd_to_reg);
@@ -1184,7 +1062,7 @@ int main(int argc, char **argv)
         printf("skipped\n");
 
 #ifdef __x86_64__
-    printf("%-40s", "Testing movq %%mm3,32(%%ecx)...");
+    printf("%-40s", "Testing movq %mm3,32(%ecx)...");
     if ( stack_exec && cpu_has_mmx )
     {
         decl_insn(movq_to_mem3);
@@ -1208,7 +1086,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing movq %%xmm2,32(%%edx)...");
+    printf("%-40s", "Testing movq %xmm2,32(%edx)...");
     if ( stack_exec )
     {
         decl_insn(movq_to_mem4);
@@ -1232,7 +1110,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing vmovq %%xmm1,32(%%ecx)...");
+    printf("%-40s", "Testing vmovq %xmm1,32(%ecx)...");
     if ( stack_exec && cpu_has_avx )
     {
         decl_insn(vmovq_to_mem2);
@@ -1260,7 +1138,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing movq %%mm3,%%rbx...");
+    printf("%-40s", "Testing movq %mm3,%rbx...");
     if ( stack_exec && cpu_has_mmx )
     {
         decl_insn(movq_to_reg);
@@ -1280,7 +1158,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing movq %%xmm2,%%rbx...");
+    printf("%-40s", "Testing movq %xmm2,%rbx...");
     if ( stack_exec )
     {
         decl_insn(movq_to_reg2);
@@ -1300,7 +1178,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    printf("%-40s", "Testing vmovq %%xmm1,%%rbx...");
+    printf("%-40s", "Testing vmovq %xmm1,%rbx...");
     if ( stack_exec && cpu_has_avx )
     {
         decl_insn(vmovq_to_reg);
@@ -1355,7 +1233,7 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
-    for ( j = 0; j < sizeof(blobs) / sizeof(*blobs); j++ )
+    for ( j = 0; j < ARRAY_SIZE(blobs); j++ )
     {
         memcpy(res, blobs[j].code, blobs[j].size);
         ctxt.addr_size = ctxt.sp_size = blobs[j].bitness;

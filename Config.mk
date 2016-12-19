@@ -18,7 +18,7 @@ or       = $(if $(strip $(1)),$(1),$(if $(strip $(2)),$(2),$(if $(strip $(3)),$(
 
 # A debug build of tools?
 # Hypervisor debug build is controlled by Kconfig.
-debug ?= n
+debug ?= y
 debug_symbols ?= $(debug)
 
 XEN_COMPILE_ARCH    ?= $(shell uname -m | sed -e s/i.86/x86_32/ \
@@ -113,21 +113,26 @@ endef
 
 cc-options-add = $(foreach o,$(3),$(call cc-option-add,$(1),$(2),$(o)))
 
-# cc-ver: Check compiler is at least specified version. Return boolean 'y'/'n'.
-# Usage: ifeq ($(call cc-ver,$(CC),0x030400),y)
+# cc-ver: Check compiler against the version requirement. Return boolean 'y'/'n'.
+# Usage: ifeq ($(call cc-ver,$(CC),ge,0x030400),y)
 cc-ver = $(shell if [ $$((`$(1) -dumpversion | awk -F. \
-           '{ printf "0x%02x%02x%02x", $$1, $$2, $$3}'`)) -ge $$(($(2))) ]; \
+           '{ printf "0x%02x%02x%02x", $$1, $$2, $$3}'`)) -$(2) $$(($(3))) ]; \
            then echo y; else echo n; fi ;)
 
 # cc-ver-check: Check compiler is at least specified version, else fail.
 # Usage: $(call cc-ver-check,CC,0x030400,"Require at least gcc-3.4")
 cc-ver-check = $(eval $(call cc-ver-check-closure,$(1),$(2),$(3)))
 define cc-ver-check-closure
-    ifeq ($$(call cc-ver,$$($(1)),$(2)),n)
+    ifeq ($$(call cc-ver,$$($(1)),ge,$(2)),n)
         override $(1) = echo "*** FATAL BUILD ERROR: "$(3) >&2; exit 1;
         cc-option := n
     endif
 endef
+
+# cc-ifversion: Check compiler version and take branch accordingly
+# Usage $(call cc-ifversion,lt,0x040700,string_if_y,string_if_n)
+cc-ifversion = $(shell [ $(call cc-ver,$(CC),$(1),$(2)) = "y" ] \
+				&& echo $(3) || echo $(4))
 
 # Require GCC v4.1+
 check-$(gcc) = $(call cc-ver-check,CC,0x040100,"Xen requires at least gcc-4.1")
@@ -277,8 +282,8 @@ SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
 OVMF_UPSTREAM_REVISION ?= bc54e50e0fe03c570014f363b547426913e92449
-QEMU_UPSTREAM_REVISION ?= qemu-xen-4.8.0-rc7
-MINIOS_UPSTREAM_REVISION ?= xen-4.8.0-rc1
+QEMU_UPSTREAM_REVISION ?= master
+MINIOS_UPSTREAM_REVISION ?= e20998fbec0af4d783abb1a0695ab4614064c520
 # Wed Sep 28 11:50:04 2016 +0200
 # minios: fix build issue with xen_*mb defines
 
@@ -289,7 +294,9 @@ SEABIOS_UPSTREAM_REVISION ?= rel-1.10.0
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= xen-4.8.0-rc7
+QEMU_TRADITIONAL_REVISION ?= b669e922b37b8957248798a5eb7aa96a666cd3fe
+# Mon Nov 14 17:19:46 2016 +0000
+# qemu: ioport_read, ioport_write: be defensive about 32-bit addresses
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

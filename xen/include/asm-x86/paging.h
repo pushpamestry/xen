@@ -57,6 +57,9 @@
  * requires VT or similar mechanisms */
 #define PG_external    (XEN_DOMCTL_SHADOW_ENABLE_EXTERNAL << PG_mode_shift)
 
+/* All paging modes. */
+#define PG_MASK (PG_refcounts | PG_log_dirty | PG_translate | PG_external)
+
 #define paging_mode_enabled(_d)   (!!(_d)->arch.paging.mode)
 #define paging_mode_shadow(_d)    (!!((_d)->arch.paging.mode & PG_SH_enable))
 #define paging_mode_hap(_d)       (!!((_d)->arch.paging.mode & PG_HAP_enable))
@@ -65,6 +68,9 @@
 #define paging_mode_log_dirty(_d) (!!((_d)->arch.paging.mode & PG_log_dirty))
 #define paging_mode_translate(_d) (!!((_d)->arch.paging.mode & PG_translate))
 #define paging_mode_external(_d)  (!!((_d)->arch.paging.mode & PG_external))
+
+#define paging_mode_only_log_dirty(_d)                  \
+    (((_d)->arch.paging.mode & PG_MASK) == PG_log_dirty)
 
 /* flags used for paging debug */
 #define PAGING_DEBUG_LOGDIRTY 0
@@ -346,6 +352,13 @@ void pagetable_dying(struct domain *d, paddr_t gpa);
 /* Print paging-assistance info to the console */
 void paging_dump_domain_info(struct domain *d);
 void paging_dump_vcpu_info(struct vcpu *v);
+
+/* Set the pool of shadow pages to the required number of pages.
+ * Input might be rounded up to at minimum amount of pages, plus
+ * space for the p2m table.
+ * Returns 0 for success, non-zero for failure. */
+int paging_set_allocation(struct domain *d, unsigned int pages,
+                          bool *preempted);
 
 #endif /* XEN_PAGING_H */
 

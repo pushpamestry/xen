@@ -131,9 +131,10 @@ unsigned elf_shdr_count(struct elf_binary *elf)
 {
     unsigned count = elf_uval(elf, elf->ehdr, e_shnum);
     uint64_t max = elf->size / sizeof(Elf32_Shdr);
-    if (max > ~(unsigned)0)
-        max = ~(unsigned)0; /* Xen doesn't have limits.h :-/ */
-    if (count > max)
+
+    if ( max > UINT_MAX )
+        max = UINT_MAX;
+    if ( count > max )
     {
         elf_mark_broken(elf, "far too many section headers");
         count = max;
@@ -148,12 +149,11 @@ unsigned elf_phdr_count(struct elf_binary *elf)
 
 ELF_HANDLE_DECL(elf_shdr) elf_shdr_by_name(struct elf_binary *elf, const char *name)
 {
-    uint64_t count = elf_shdr_count(elf);
+    unsigned i, count = elf_shdr_count(elf);
     ELF_HANDLE_DECL(elf_shdr) shdr;
     const char *sname;
-    unsigned i;
 
-    for ( i = 0; i < count; i++ )
+    for ( i = 1; i < count; i++ )
     {
         shdr = elf_shdr_by_index(elf, i);
         if ( !elf_access_ok(elf, ELF_HANDLE_PTRVAL(shdr), 1) )
@@ -168,7 +168,7 @@ ELF_HANDLE_DECL(elf_shdr) elf_shdr_by_name(struct elf_binary *elf, const char *n
 
 ELF_HANDLE_DECL(elf_shdr) elf_shdr_by_index(struct elf_binary *elf, unsigned index)
 {
-    uint64_t count = elf_shdr_count(elf);
+    unsigned count = elf_shdr_count(elf);
     elf_ptrval ptr;
 
     if ( index >= count )
@@ -182,7 +182,7 @@ ELF_HANDLE_DECL(elf_shdr) elf_shdr_by_index(struct elf_binary *elf, unsigned ind
 
 ELF_HANDLE_DECL(elf_phdr) elf_phdr_by_index(struct elf_binary *elf, unsigned index)
 {
-    uint64_t count = elf_uval(elf, elf->ehdr, e_phnum);
+    unsigned count = elf_phdr_count(elf);
     elf_ptrval ptr;
 
     if ( index >= count )

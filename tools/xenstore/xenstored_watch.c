@@ -47,6 +47,33 @@ struct watch
 	char *node;
 };
 
+static bool check_event_node(const char *node)
+{
+	if (!node || !strstarts(node, "@")) {
+		errno = EINVAL;
+		return false;
+	}
+	return true;
+}
+
+/* Is child a subnode of parent, or equal? */
+static bool is_child(const char *child, const char *parent)
+{
+	unsigned int len = strlen(parent);
+
+	/*
+	 * / should really be "" for this algorithm to work, but that's a
+	 * usability nightmare.
+	 */
+	if (streq(parent, "/"))
+		return true;
+
+	if (strncmp(child, parent, len) != 0)
+		return false;
+
+	return child[len] == '/' || child[len] == '\0';
+}
+
 /*
  * Send a watch event.
  * Temporary memory allocations are done with ctx.
@@ -84,6 +111,8 @@ static void add_event(struct connection *conn,
 
 	len = strlen(name) + 1 + strlen(watch->token) + 1;
 	data = talloc_array(ctx, char, len);
+	if (!data)
+		return;
 	strcpy(data, name);
 	strcpy(data + strlen(name) + 1, watch->token);
 	send_reply(conn, XS_WATCH_EVENT, data, len);
@@ -121,50 +150,48 @@ static int destroy_watch(void *_watch)
 	return 0;
 }
 
-void do_watch(struct connection *conn, struct buffered_data *in)
+int do_watch(struct connection *conn, struct buffered_data *in)
 {
 	struct watch *watch;
 	char *vec[2];
 	bool relative;
 
-	if (get_strings(in, vec, ARRAY_SIZE(vec)) != ARRAY_SIZE(vec)) {
-		send_error(conn, EINVAL);
-		return;
-	}
+	if (get_strings(in, vec, ARRAY_SIZE(vec)) != ARRAY_SIZE(vec))
+		return EINVAL;
 
 	if (strstarts(vec[0], "@")) {
 		relative = false;
-		if (strlen(vec[0]) > XENSTORE_REL_PATH_MAX) {
-			send_error(conn, EINVAL);
-			return;
-		}
+		if (strlen(vec[0]) > XENSTORE_REL_PATH_MAX)
+			return EINVAL;
 		/* check if valid event */
 	} else {
 		relative = !strstarts(vec[0], "/");
-		vec[0] = canonicalize(conn, vec[0]);
-		if (!is_valid_nodename(vec[0])) {
-			send_error(conn, EINVAL);
-			return;
-		}
+		vec[0] = canonicalize(conn, in, vec[0]);
+		if (!vec[0])
+			return ENOMEM;
+		if (!is_valid_nodename(vec[0]))
+			return EINVAL;
 	}
 
 	/* Check for duplicates. */
 	list_for_each_entry(watch, &conn->watches, list) {
 		if (streq(watch->node, vec[0]) &&
-		    streq(watch->token, vec[1])) {
-			send_error(conn, EEXIST);
-			return;
-		}
+		    streq(watch->token, vec[1]))
+			return EEXIST;
 	}
 
-	if (domain_watch(conn) > quota_nb_watch_per_domain) {
-		send_error(conn, E2BIG);
-		return;
-	}
+	if (domain_watch(conn) > quota_nb_watch_per_domain)
+		return E2BIG;
 
 	watch = talloc(conn, struct watch);
+	if (!watch)
+		return ENOMEM;
 	watch->node = talloc_strdup(watch, vec[0]);
 	watch->token = talloc_strdup(watch, vec[1]);
+	if (!watch->node || !watch->token) {
+		talloc_free(watch);
+		return ENOMEM;
+	}
 	if (relative)
 		watch->relative_path = get_implicit_path(conn);
 	else
@@ -180,29 +207,31 @@ void do_watch(struct connection *conn, struct buffered_data *in)
 
 	/* We fire once up front: simplifies clients and restart. */
 	add_event(conn, in, watch, watch->node);
+
+	return 0;
 }
 
-void do_unwatch(struct connection *conn, struct buffered_data *in)
+int do_unwatch(struct connection *conn, struct buffered_data *in)
 {
 	struct watch *watch;
 	char *node, *vec[2];
 
-	if (get_strings(in, vec, ARRAY_SIZE(vec)) != ARRAY_SIZE(vec)) {
-		send_error(conn, EINVAL);
-		return;
-	}
+	if (get_strings(in, vec, ARRAY_SIZE(vec)) != ARRAY_SIZE(vec))
+		return EINVAL;
 
-	node = canonicalize(conn, vec[0]);
+	node = canonicalize(conn, in, vec[0]);
+	if (!node)
+		return ENOMEM;
 	list_for_each_entry(watch, &conn->watches, list) {
 		if (streq(watch->node, node) && streq(watch->token, vec[1])) {
 			list_del(&watch->list);
 			talloc_free(watch);
 			domain_watch_dec(conn);
 			send_ack(conn, XS_UNWATCH);
-			return;
+			return 0;
 		}
 	}
-	send_error(conn, ENOENT);
+	return ENOENT;
 }
 
 void conn_delete_all_watches(struct connection *conn)

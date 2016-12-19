@@ -2514,7 +2514,7 @@ static int __get_page_type(struct page_info *page, unsigned long type,
                 cpumask_copy(&mask, d->domain_dirty_cpumask);
 
                 /* Don't flush if the timestamp is old enough */
-                tlbflush_filter(mask, page->tlbflush_timestamp);
+                tlbflush_filter(&mask, page->tlbflush_timestamp);
 
                 if ( unlikely(!cpumask_empty(&mask)) &&
                      /* Shadow mode: track only writable pages. */
@@ -4736,15 +4736,18 @@ static int _handle_iomem_range(unsigned long s, unsigned long e,
         XEN_GUEST_HANDLE_PARAM(e820entry_t) buffer_param;
         XEN_GUEST_HANDLE(e820entry_t) buffer;
 
-        if ( ctxt->n + 1 >= ctxt->map.nr_entries )
-            return -EINVAL;
-        ent.addr = (uint64_t)ctxt->s << PAGE_SHIFT;
-        ent.size = (uint64_t)(s - ctxt->s) << PAGE_SHIFT;
-        ent.type = E820_RESERVED;
-        buffer_param = guest_handle_cast(ctxt->map.buffer, e820entry_t);
-        buffer = guest_handle_from_param(buffer_param, e820entry_t);
-        if ( __copy_to_guest_offset(buffer, ctxt->n, &ent, 1) )
-            return -EFAULT;
+        if ( !guest_handle_is_null(ctxt->map.buffer) )
+        {
+            if ( ctxt->n + 1 >= ctxt->map.nr_entries )
+                return -EINVAL;
+            ent.addr = (uint64_t)ctxt->s << PAGE_SHIFT;
+            ent.size = (uint64_t)(s - ctxt->s) << PAGE_SHIFT;
+            ent.type = E820_RESERVED;
+            buffer_param = guest_handle_cast(ctxt->map.buffer, e820entry_t);
+            buffer = guest_handle_from_param(buffer_param, e820entry_t);
+            if ( __copy_to_guest_offset(buffer, ctxt->n, &ent, 1) )
+                return -EFAULT;
+        }
         ctxt->n++;
     }
     ctxt->s = e + 1;
@@ -4978,6 +4981,7 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         XEN_GUEST_HANDLE(e820entry_t) buffer;
         XEN_GUEST_HANDLE_PARAM(e820entry_t) buffer_param;
         unsigned int i;
+        bool store;
 
         rc = xsm_machine_memory_map(XSM_PRIV);
         if ( rc )
@@ -4985,12 +4989,15 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         if ( copy_from_guest(&ctxt.map, arg, 1) )
             return -EFAULT;
-        if ( ctxt.map.nr_entries < e820.nr_map + 1 )
+
+        store = !guest_handle_is_null(ctxt.map.buffer);
+
+        if ( store && ctxt.map.nr_entries < e820.nr_map + 1 )
             return -EINVAL;
 
         buffer_param = guest_handle_cast(ctxt.map.buffer, e820entry_t);
         buffer = guest_handle_from_param(buffer_param, e820entry_t);
-        if ( !guest_handle_okay(buffer, ctxt.map.nr_entries) )
+        if ( store && !guest_handle_okay(buffer, ctxt.map.nr_entries) )
             return -EFAULT;
 
         for ( i = 0, ctxt.n = 0, ctxt.s = 0; i < e820.nr_map; ++i, ++ctxt.n )
@@ -5007,10 +5014,13 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
                 if ( rc )
                     return rc;
             }
-            if ( ctxt.map.nr_entries <= ctxt.n + (e820.nr_map - i) )
-                return -EINVAL;
-            if ( __copy_to_guest_offset(buffer, ctxt.n, e820.map + i, 1) )
-                return -EFAULT;
+            if ( store )
+            {
+                if ( ctxt.map.nr_entries <= ctxt.n + (e820.nr_map - i) )
+                    return -EINVAL;
+                if ( __copy_to_guest_offset(buffer, ctxt.n, e820.map + i, 1) )
+                    return -EFAULT;
+            }
             ctxt.s = PFN_UP(e820.map[i].addr + e820.map[i].size);
         }
 
@@ -5136,7 +5146,7 @@ static int ptwr_emulated_read(
     if ( !__addr_ok(addr) ||
          (rc = __copy_from_user(p_data, (void *)addr, bytes)) )
     {
-        propagate_page_fault(addr + bytes - rc, 0); /* read fault */
+        x86_emul_pagefault(0, addr + bytes - rc, ctxt);  /* Read fault. */
         return X86EMUL_EXCEPTION;
     }
 
@@ -5177,7 +5187,9 @@ static int ptwr_emulated_update(
         addr &= ~(sizeof(paddr_t)-1);
         if ( (rc = copy_from_user(&full, (void *)addr, sizeof(paddr_t))) != 0 )
         {
-            propagate_page_fault(addr+sizeof(paddr_t)-rc, 0); /* read fault */
+            x86_emul_pagefault(0, /* Read fault. */
+                               addr + sizeof(paddr_t) - rc,
+                               &ptwr_ctxt->ctxt);
             return X86EMUL_EXCEPTION;
         }
         /* Mask out bits provided by caller. */
@@ -5254,7 +5266,7 @@ static int ptwr_emulated_update(
         {
             unmap_domain_page(pl1e);
             put_page_from_l1e(nl1e, d);
-            return X86EMUL_CMPXCHG_FAILED;
+            return X86EMUL_RETRY;
         }
     }
     else
@@ -5337,7 +5349,14 @@ int ptwr_do_page_fault(struct vcpu *v, unsigned long addr,
     struct domain *d = v->domain;
     struct page_info *page;
     l1_pgentry_t      pte;
-    struct ptwr_emulate_ctxt ptwr_ctxt;
+    struct ptwr_emulate_ctxt ptwr_ctxt = {
+        .ctxt = {
+            .regs = regs,
+            .addr_size = is_pv_32bit_domain(d) ? 32 : BITS_PER_LONG,
+            .sp_size   = is_pv_32bit_domain(d) ? 32 : BITS_PER_LONG,
+            .swint_emulate = x86_swint_emulate_none,
+        },
+    };
     int rc;
 
     /* Attempt to read the PTE that maps the VA being accessed. */
@@ -5363,11 +5382,6 @@ int ptwr_do_page_fault(struct vcpu *v, unsigned long addr,
         goto bail;
     }
 
-    ptwr_ctxt.ctxt.regs = regs;
-    ptwr_ctxt.ctxt.force_writeback = 0;
-    ptwr_ctxt.ctxt.addr_size = ptwr_ctxt.ctxt.sp_size =
-        is_pv_32bit_domain(d) ? 32 : BITS_PER_LONG;
-    ptwr_ctxt.ctxt.swint_emulate = x86_swint_emulate_none;
     ptwr_ctxt.cr2 = addr;
     ptwr_ctxt.pte = pte;
 
@@ -5376,11 +5390,38 @@ int ptwr_do_page_fault(struct vcpu *v, unsigned long addr,
     page_unlock(page);
     put_page(page);
 
-    if ( rc == X86EMUL_UNHANDLEABLE )
-        goto bail;
+    /* More strict than x86_emulate_wrapper(), as this is now true for PV. */
+    ASSERT(ptwr_ctxt.ctxt.event_pending == (rc == X86EMUL_EXCEPTION));
 
-    perfc_incr(ptwr_emulations);
-    return EXCRET_fault_fixed;
+    switch ( rc )
+    {
+    case X86EMUL_EXCEPTION:
+        /*
+         * This emulation only covers writes to pagetables which are marked
+         * read-only by Xen.  We tolerate #PF (in case a concurrent pagetable
+         * update has succeeded on a different vcpu).  Anything else is an
+         * emulation bug, or a guest playing with the instruction stream under
+         * Xen's feet.
+         */
+        if ( ptwr_ctxt.ctxt.event.type == X86_EVENTTYPE_HW_EXCEPTION &&
+             ptwr_ctxt.ctxt.event.vector == TRAP_page_fault )
+            pv_inject_event(&ptwr_ctxt.ctxt.event);
+        else
+            gdprintk(XENLOG_WARNING,
+                     "Unexpected event (type %u, vector %#x) from emulation\n",
+                     ptwr_ctxt.ctxt.event.type, ptwr_ctxt.ctxt.event.vector);
+
+        /* Fallthrough */
+    case X86EMUL_OKAY:
+
+        if ( ptwr_ctxt.ctxt.retire.singlestep )
+            pv_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
+
+        /* Fallthrough */
+    case X86EMUL_RETRY:
+        perfc_incr(ptwr_emulations);
+        return EXCRET_fault_fixed;
+    }
 
  bail:
     return 0;
@@ -5500,7 +5541,39 @@ int mmio_ro_do_page_fault(struct vcpu *v, unsigned long addr,
     else
         rc = x86_emulate(&ctxt, &mmio_ro_emulate_ops);
 
-    return rc != X86EMUL_UNHANDLEABLE ? EXCRET_fault_fixed : 0;
+    /* More strict than x86_emulate_wrapper(), as this is now true for PV. */
+    ASSERT(ctxt.event_pending == (rc == X86EMUL_EXCEPTION));
+
+    switch ( rc )
+    {
+    case X86EMUL_EXCEPTION:
+        /*
+         * This emulation only covers writes to MMCFG space or read-only MFNs.
+         * We tolerate #PF (from hitting an adjacent page or a successful
+         * concurrent pagetable update).  Anything else is an emulation bug,
+         * or a guest playing with the instruction stream under Xen's feet.
+         */
+        if ( ctxt.event.type == X86_EVENTTYPE_HW_EXCEPTION &&
+             ctxt.event.vector == TRAP_page_fault )
+            pv_inject_event(&ctxt.event);
+        else
+            gdprintk(XENLOG_WARNING,
+                     "Unexpected event (type %u, vector %#x) from emulation\n",
+                     ctxt.event.type, ctxt.event.vector);
+
+        /* Fallthrough */
+    case X86EMUL_OKAY:
+
+        if ( ctxt.retire.singlestep )
+            pv_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
+
+        /* Fallthrough */
+    case X86EMUL_RETRY:
+        perfc_incr(ptwr_emulations);
+        return EXCRET_fault_fixed;
+    }
+
+    return 0;
 }
 
 void *alloc_xen_pagetable(void)

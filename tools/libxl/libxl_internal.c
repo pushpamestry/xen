@@ -22,7 +22,7 @@ void libxl__alloc_failed(libxl_ctx *ctx, const char *func,
 #define M "libxl: FATAL ERROR: memory allocation failure"
 #define L (size ? M " (%s, %lu x %lu)\n" : M " (%s)\n"), \
           func, (unsigned long)nmemb, (unsigned long)size
-    libxl__log(ctx, XTL_CRITICAL, ENOMEM, 0,0, func, L);
+    libxl__log(ctx, XTL_CRITICAL, ENOMEM, 0,0, func, INVALID_DOMID, L);
     fprintf(stderr, L);
     fflush(stderr);
     _exit(-1);
@@ -202,7 +202,7 @@ char *libxl__dirname(libxl__gc *gc, const char *s)
 
 void libxl__logv(libxl_ctx *ctx, xentoollog_level msglevel, int errnoval,
              const char *file, int line, const char *func,
-             const char *fmt, va_list ap)
+             uint32_t domid, const char *fmt, va_list ap)
 {
     /* WARNING this function may not call any libxl-provided
      * memory allocation function, as those may
@@ -211,6 +211,7 @@ void libxl__logv(libxl_ctx *ctx, xentoollog_level msglevel, int errnoval,
     char *base = NULL;
     int rc, esave;
     char fileline[256];
+    char domain[256];
 
     esave = errno;
 
@@ -221,22 +222,25 @@ void libxl__logv(libxl_ctx *ctx, xentoollog_level msglevel, int errnoval,
     if (file) snprintf(fileline, sizeof(fileline), "%s:%d",file,line);
     fileline[sizeof(fileline)-1] = 0;
 
+    domain[0] = 0;
+    if (domid != INVALID_DOMID)
+        snprintf(domain, sizeof(domain), "Domain %"PRIu32":", domid);
  x:
     xtl_log(ctx->lg, msglevel, errnoval, "libxl",
-            "%s%s%s%s" "%s",
+            "%s%s%s%s%s" "%s",
             fileline, func&&file?":":"", func?func:"", func||file?": ":"",
-            base);
+            domain, base);
     if (base != enomem) free(base);
     errno = esave;
 }
 
 void libxl__log(libxl_ctx *ctx, xentoollog_level msglevel, int errnoval,
             const char *file, int line, const char *func,
-            const char *fmt, ...)
+            uint32_t domid, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    libxl__logv(ctx, msglevel, errnoval, file, line, func, fmt, ap);
+    libxl__logv(ctx, msglevel, errnoval, file, line, func, domid, fmt, ap);
     va_end(ap);
 }
 
@@ -376,7 +380,7 @@ int libxl__device_model_version_running(libxl__gc *gc, uint32_t domid)
     }
 
     if (libxl_device_model_version_from_string(dm_version, &value) < 0) {
-        LOG(ERROR, "fatal: %s contain a wrong value (%s)", path, dm_version);
+        LOGD(ERROR, domid, "fatal: %s contain a wrong value (%s)", path, dm_version);
         return -1;
     }
     return value;
@@ -403,7 +407,8 @@ libxl__domain_userdata_lock *libxl__lock_domain_userdata(libxl__gc *gc,
         libxl__carefd_begin();
         fd = open(lockfile, O_RDWR|O_CREAT, 0666);
         if (fd < 0)
-            LOGE(ERROR, "cannot open lockfile %s, errno=%d", lockfile, errno);
+            LOGED(ERROR, domid,
+                  "cannot open lockfile %s, errno=%d", lockfile, errno);
         lock->carefd = libxl__carefd_opened(CTX, fd);
         if (fd < 0) goto out;
 
@@ -417,21 +422,21 @@ libxl__domain_userdata_lock *libxl__lock_domain_userdata(libxl__gc *gc,
                 continue;
             default:
                 /* All other errno: EBADF, EINVAL, ENOLCK, EWOULDBLOCK */
-                LOGE(ERROR,
-                     "unexpected error while trying to lock %s, fd=%d, errno=%d",
-                     lockfile, fd, errno);
+                LOGED(ERROR, domid,
+                      "unexpected error while trying to lock %s, fd=%d, errno=%d",
+                      lockfile, fd, errno);
                 goto out;
             }
         }
 
         if (fstat(fd, &fstab)) {
-            LOGE(ERROR, "cannot fstat %s, fd=%d, errno=%d",
-                 lockfile, fd, errno);
+            LOGED(ERROR, domid, "cannot fstat %s, fd=%d, errno=%d",
+                  lockfile, fd, errno);
             goto out;
         }
         if (stat(lockfile, &stab)) {
             if (errno != ENOENT) {
-                LOGE(ERROR, "cannot stat %s, errno=%d", lockfile, errno);
+                LOGED(ERROR, domid, "cannot stat %s, errno=%d", lockfile, errno);
                 goto out;
             }
         } else {
@@ -485,8 +490,8 @@ int libxl__get_domain_configuration(libxl__gc *gc, uint32_t domid,
 
     rc = libxl__userdata_retrieve(gc, domid, "libxl-json", &data, &len);
     if (rc) {
-        LOGEV(ERROR, rc,
-              "failed to retrieve domain configuration for domain %d", domid);
+        LOGEVD(ERROR, rc, domid,
+              "failed to retrieve domain configuration");
         rc = ERROR_FAIL;
         goto out;
     }
@@ -511,9 +516,8 @@ int libxl__set_domain_configuration(libxl__gc *gc, uint32_t domid,
 
     d_config_json = libxl_domain_config_to_json(CTX, d_config);
     if (!d_config_json) {
-        LOGE(ERROR,
-             "failed to convert domain configuration to JSON for domain %d",
-             domid);
+        LOGED(ERROR, domid,
+              "failed to convert domain configuration to JSON");
         rc = ERROR_FAIL;
         goto out;
     }
@@ -522,8 +526,7 @@ int libxl__set_domain_configuration(libxl__gc *gc, uint32_t domid,
                                (const uint8_t *)d_config_json,
                                strlen(d_config_json) + 1 /* include '\0' */);
     if (rc) {
-        LOGEV(ERROR, rc, "failed to store domain configuration for domain %d",
-              domid);
+        LOGEVD(ERROR, rc, domid, "failed to store domain configuration");
         rc = ERROR_FAIL;
         goto out;
     }

@@ -321,11 +321,11 @@ gw_remove_write_accesses(struct vcpu *v, unsigned long va, walk_t *gw)
     return rc;
 }
 
-#if SHADOW_AUDIT & SHADOW_AUDIT_ENTRIES
 /* Lightweight audit: pass all the shadows associated with this guest walk
  * through the audit mechanisms */
-static void sh_audit_gw(struct vcpu *v, walk_t *gw)
+static void sh_audit_gw(struct vcpu *v, const walk_t *gw)
 {
+#if SHADOW_AUDIT & SHADOW_AUDIT_ENTRIES
     struct domain *d = v->domain;
     mfn_t smfn;
 
@@ -362,12 +362,8 @@ static void sh_audit_gw(struct vcpu *v, walk_t *gw)
               && mfn_valid(
               (smfn = get_fl1_shadow_status(d, guest_l2e_get_gfn(gw->l2e)))) )
         (void) sh_audit_fl1_table(v, smfn, INVALID_MFN);
+#endif /* SHADOW_AUDIT & SHADOW_AUDIT_ENTRIES */
 }
-
-#else
-#define sh_audit_gw(_v, _gw) do {} while(0)
-#endif /* audit code */
-
 
 /*
  * Write a new value into the guest pagetable, and update the shadows
@@ -2860,15 +2856,17 @@ static int sh_page_fault(struct vcpu *v,
     struct sh_emulate_ctxt emul_ctxt;
     const struct x86_emulate_ops *emul_ops;
     int r;
-    fetch_type_t ft = 0;
     p2m_type_t p2mt;
     uint32_t rc;
     int version;
-    struct npfec access = {
+    const struct npfec access = {
          .read_access = 1,
+         .write_access = !!(regs->error_code & PFEC_write_access),
          .gla_valid = 1,
          .kind = npfec_kind_with_gla
     };
+    const fetch_type_t ft =
+        access.write_access ? ft_demand_write : ft_demand_read;
 #if SHADOW_OPTIMIZATIONS & SHOPT_FAST_EMULATION
     int fast_emul = 0;
 #endif
@@ -2877,9 +2875,6 @@ static int sh_page_fault(struct vcpu *v,
                   v, va, regs->error_code, regs->eip);
 
     perfc_incr(shadow_fault);
-
-    if ( regs->error_code & PFEC_write_access )
-        access.write_access = 1;
 
 #if SHADOW_OPTIMIZATIONS & SHOPT_FAST_EMULATION
     /* If faulting frame is successfully emulated in last shadow fault
@@ -3049,10 +3044,6 @@ static int sh_page_fault(struct vcpu *v,
         SHADOW_PRINTK("guest is shutting down\n");
         goto propagate;
     }
-
-    /* What kind of access are we dealing with? */
-    ft = ((regs->error_code & PFEC_write_access)
-          ? ft_demand_write : ft_demand_read);
 
     /* What mfn is the guest trying to access? */
     gfn = guest_l1e_get_gfn(gw.l1e);
@@ -3314,7 +3305,7 @@ static int sh_page_fault(struct vcpu *v,
                 }
             }
 #else /* 32 or 64 */
-            used = (mfn_x(pagetable_get_mfn(tmp->arch.guest_table)) == mfn_x(gmfn));
+            used = mfn_eq(pagetable_get_mfn(tmp->arch.guest_table), gmfn);
 #endif
             if ( used )
                 break;
@@ -3373,6 +3364,30 @@ static int sh_page_fault(struct vcpu *v,
 
     r = x86_emulate(&emul_ctxt.ctxt, emul_ops);
 
+    if ( r == X86EMUL_EXCEPTION && emul_ctxt.ctxt.event_pending )
+    {
+        /*
+         * This emulation covers writes to shadow pagetables.  We tolerate #PF
+         * (from accesses spanning pages, concurrent paging updated from
+         * vcpus, etc) and #GP[0]/#SS[0] (from segmentation errors).  Anything
+         * else is an emulation bug, or a guest playing with the instruction
+         * stream under Xen's feet.
+         */
+        if ( emul_ctxt.ctxt.event.type == X86_EVENTTYPE_HW_EXCEPTION &&
+             ((emul_ctxt.ctxt.event.vector == TRAP_page_fault) ||
+              (((emul_ctxt.ctxt.event.vector == TRAP_gp_fault) ||
+                (emul_ctxt.ctxt.event.vector == TRAP_stack_error)) &&
+               emul_ctxt.ctxt.event.error_code == 0)) )
+            hvm_inject_event(&emul_ctxt.ctxt.event);
+        else
+        {
+            SHADOW_PRINTK(
+                "Unexpected event (type %u, vector %#x) from emulation\n",
+                emul_ctxt.ctxt.event.type, emul_ctxt.ctxt.event.vector);
+            r = X86EMUL_UNHANDLEABLE;
+        }
+    }
+
     /*
      * NB. We do not unshadow on X86EMUL_EXCEPTION. It's not clear that it
      * would be a good unshadow hint. If we *do* decide to unshadow-on-fault
@@ -3422,18 +3437,31 @@ static int sh_page_fault(struct vcpu *v,
         v->arch.paging.last_write_emul_ok = 0;
 #endif
 
+    if ( emul_ctxt.ctxt.retire.singlestep )
+        hvm_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
+
 #if GUEST_PAGING_LEVELS == 3 /* PAE guest */
-    if ( r == X86EMUL_OKAY ) {
+    /*
+     * If there are no pending actions, emulate up to four extra instructions
+     * in the hope of catching the "second half" of a 64-bit pagetable write.
+     */
+    if ( r == X86EMUL_OKAY && !emul_ctxt.ctxt.retire.raw )
+    {
         int i, emulation_count=0;
         this_cpu(trace_emulate_initial_va) = va;
-        /* Emulate up to four extra instructions in the hope of catching
-         * the "second half" of a 64-bit pagetable write. */
+
         for ( i = 0 ; i < 4 ; i++ )
         {
             shadow_continue_emulation(&emul_ctxt, regs);
             v->arch.paging.last_write_was_pt = 0;
             r = x86_emulate(&emul_ctxt.ctxt, emul_ops);
-            if ( r == X86EMUL_OKAY )
+
+            /*
+             * Only continue the search for the second half if there are no
+             * exceptions or pending actions.  Otherwise, give up and re-enter
+             * the guest.
+             */
+            if ( r == X86EMUL_OKAY && !emul_ctxt.ctxt.retire.raw )
             {
                 emulation_count++;
                 if ( v->arch.paging.last_write_was_pt )
@@ -3449,6 +3477,10 @@ static int sh_page_fault(struct vcpu *v,
             {
                 perfc_incr(shadow_em_ex_fail);
                 TRACE_SHADOW_PATH_FLAG(TRCE_SFLAG_EMULATION_LAST_FAILED);
+
+                if ( emul_ctxt.ctxt.retire.singlestep )
+                    hvm_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
+
                 break; /* Don't emulate again if we failed! */
             }
         }
@@ -4694,7 +4726,7 @@ sh_x86_emulate_cmpxchg(struct vcpu *v, unsigned long vaddr,
     }
 
     if ( prev != old )
-        rv = X86EMUL_CMPXCHG_FAILED;
+        rv = X86EMUL_RETRY;
 
     SHADOW_DEBUG(EMULATE, "va %#lx was %#lx expected %#lx"
                   " wanted %#lx now %#lx bytes %u\n",

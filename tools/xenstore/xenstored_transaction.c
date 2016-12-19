@@ -68,7 +68,10 @@ struct transaction
 	uint32_t id;
 
 	/* Generation when transaction started. */
-	unsigned int generation;
+	uint64_t generation;
+
+	/* Transaction internal generation. */
+	uint64_t trans_gen;
 
 	/* TDB to work on, and filename */
 	TDB_CONTEXT *tdb;
@@ -82,7 +85,7 @@ struct transaction
 };
 
 extern int quota_max_transaction;
-static unsigned int generation;
+static uint64_t generation;
 
 /* Return tdb context to use for this connection. */
 TDB_CONTEXT *tdb_transaction_context(struct transaction *trans)
@@ -92,18 +95,23 @@ TDB_CONTEXT *tdb_transaction_context(struct transaction *trans)
 
 /* Callers get a change node (which can fail) and only commit after they've
  * finished.  This way they don't have to unwind eg. a write. */
-void add_change_node(struct transaction *trans, const char *node, bool recurse)
+void add_change_node(struct connection *conn, struct node *node, bool recurse)
 {
 	struct changed_node *i;
+	struct transaction *trans;
 
-	if (!trans) {
+	if (!conn || !conn->transaction) {
 		/* They're changing the global database. */
-		generation++;
+		node->generation = generation++;
 		return;
 	}
 
+	trans = conn->transaction;
+
+	node->generation = generation + trans->trans_gen++;
+
 	list_for_each_entry(i, &trans->changes, list) {
-		if (streq(i->node, node)) {
+		if (streq(i->node, node->name)) {
 			if (recurse)
 				i->recurse = recurse;
 			return;
@@ -111,7 +119,18 @@ void add_change_node(struct transaction *trans, const char *node, bool recurse)
 	}
 
 	i = talloc(trans, struct changed_node);
-	i->node = talloc_strdup(i, node);
+	if (!i) {
+		/* All we can do is let the transaction fail. */
+		generation++;
+		return;
+	}
+	i->node = talloc_strdup(i, node->name);
+	if (!i->node) {
+		/* All we can do is let the transaction fail. */
+		generation++;
+		talloc_free(i);
+		return;
+	}
 	i->recurse = recurse;
 	list_add_tail(&i->list, &trans->changes);
 }
@@ -141,34 +160,33 @@ struct transaction *transaction_lookup(struct connection *conn, uint32_t id)
 	return ERR_PTR(-ENOENT);
 }
 
-void do_transaction_start(struct connection *conn, struct buffered_data *in)
+int do_transaction_start(struct connection *conn, struct buffered_data *in)
 {
 	struct transaction *trans, *exists;
 	char id_str[20];
 
 	/* We don't support nested transactions. */
-	if (conn->transaction) {
-		send_error(conn, EBUSY);
-		return;
-	}
+	if (conn->transaction)
+		return EBUSY;
 
-	if (conn->id && conn->transaction_started > quota_max_transaction) {
-		send_error(conn, ENOSPC);
-		return;
-	}
+	if (conn->id && conn->transaction_started > quota_max_transaction)
+		return ENOSPC;
 
 	/* Attach transaction to input for autofree until it's complete */
-	trans = talloc(in, struct transaction);
+	trans = talloc_zero(in, struct transaction);
+	if (!trans)
+		return ENOMEM;
+
 	INIT_LIST_HEAD(&trans->changes);
 	INIT_LIST_HEAD(&trans->changed_domains);
 	trans->generation = generation;
 	trans->tdb_name = talloc_asprintf(trans, "%s.%p",
 					  xs_daemon_tdb(), trans);
+	if (!trans->tdb_name)
+		return ENOMEM;
 	trans->tdb = tdb_copy(tdb_context(conn), trans->tdb_name);
-	if (!trans->tdb) {
-		send_error(conn, errno);
-		return;
-	}
+	if (!trans->tdb)
+		return errno;
 	/* Make it close if we go away. */
 	talloc_steal(trans, trans->tdb);
 
@@ -186,42 +204,36 @@ void do_transaction_start(struct connection *conn, struct buffered_data *in)
 
 	snprintf(id_str, sizeof(id_str), "%u", trans->id);
 	send_reply(conn, XS_TRANSACTION_START, id_str, strlen(id_str)+1);
+
+	return 0;
 }
 
-void do_transaction_end(struct connection *conn, struct buffered_data *in)
+int do_transaction_end(struct connection *conn, struct buffered_data *in)
 {
 	const char *arg = onearg(in);
 	struct changed_node *i;
 	struct changed_domain *d;
 	struct transaction *trans;
 
-	if (!arg || (!streq(arg, "T") && !streq(arg, "F"))) {
-		send_error(conn, EINVAL);
-		return;
-	}
+	if (!arg || (!streq(arg, "T") && !streq(arg, "F")))
+		return EINVAL;
 
-	if ((trans = conn->transaction) == NULL) {
-		send_error(conn, ENOENT);
-		return;
-	}
+	if ((trans = conn->transaction) == NULL)
+		return ENOENT;
 
 	conn->transaction = NULL;
 	list_del(&trans->list);
 	conn->transaction_started--;
 
-	/* Attach transaction to arg for auto-cleanup */
-	talloc_steal(arg, trans);
+	/* Attach transaction to in for auto-cleanup */
+	talloc_steal(in, trans);
 
 	if (streq(arg, "T")) {
 		/* FIXME: Merge, rather failing on any change. */
-		if (trans->generation != generation) {
-			send_error(conn, EAGAIN);
-			return;
-		}
-		if (!replace_tdb(trans->tdb_name, trans->tdb)) {
-			send_error(conn, errno);
-			return;
-		}
+		if (trans->generation != generation)
+			return EAGAIN;
+		if (!replace_tdb(trans->tdb_name, trans->tdb))
+			return errno;
 		/* Don't close this: we won! */
 		trans->tdb = NULL;
 
@@ -232,9 +244,11 @@ void do_transaction_end(struct connection *conn, struct buffered_data *in)
 		/* Fire off the watches for everything that changed. */
 		list_for_each_entry(i, &trans->changes, list)
 			fire_watches(conn, in, i->node, i->recurse);
-		generation++;
+		generation += trans->trans_gen;
 	}
 	send_ack(conn, XS_TRANSACTION_END);
+
+	return 0;
 }
 
 void transaction_entry_inc(struct transaction *trans, unsigned int domid)
@@ -248,6 +262,11 @@ void transaction_entry_inc(struct transaction *trans, unsigned int domid)
 		}
 
 	d = talloc(trans, struct changed_domain);
+	if (!d) {
+		/* Let the transaction fail. */
+		generation++;
+		return;
+	}
 	d->domid = domid;
 	d->nbentry = 1;
 	list_add_tail(&d->list, &trans->changed_domains);
@@ -264,6 +283,11 @@ void transaction_entry_dec(struct transaction *trans, unsigned int domid)
 		}
 
 	d = talloc(trans, struct changed_domain);
+	if (!d) {
+		/* Let the transaction fail. */
+		generation++;
+		return;
+	}
 	d->domid = domid;
 	d->nbentry = -1;
 	list_add_tail(&d->list, &trans->changed_domains);

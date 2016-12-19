@@ -136,9 +136,13 @@ int vpmu_do_msr(unsigned int msr, uint64_t *msr_content,
     const struct arch_vpmu_ops *ops;
     int ret = 0;
 
+    /*
+     * Hide the PMU MSRs if vpmu is not configured, or the hardware domain is
+     * profiling the whole system.
+     */
     if ( likely(vpmu_mode == XENPMU_MODE_OFF) ||
          ((vpmu_mode & XENPMU_MODE_ALL) &&
-          !is_hardware_domain(current->domain)) )
+          !is_hardware_domain(curr->domain)) )
          goto nop;
 
     vpmu = vcpu_vpmu(curr);
@@ -345,16 +349,6 @@ void vpmu_do_interrupt(struct cpu_user_regs *regs)
         sampling->nmi_pending = 1;
         break;
     }
-}
-
-void vpmu_do_cpuid(unsigned int input,
-                   unsigned int *eax, unsigned int *ebx,
-                   unsigned int *ecx, unsigned int *edx)
-{
-    struct vpmu_struct *vpmu = vcpu_vpmu(current);
-
-    if ( vpmu->arch_vpmu_ops && vpmu->arch_vpmu_ops->do_cpuid )
-        vpmu->arch_vpmu_ops->do_cpuid(input, eax, ebx, ecx, edx);
 }
 
 static void vpmu_save_force(void *arg)

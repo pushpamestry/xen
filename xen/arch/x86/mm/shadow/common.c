@@ -162,8 +162,15 @@ static int hvm_translate_linear_addr(
 
     if ( !okay )
     {
-        hvm_inject_hw_exception(
-            (seg == x86_seg_ss) ? TRAP_stack_error : TRAP_gp_fault, 0);
+        /*
+         * Leave exception injection to the caller for non-user segments: We
+         * neither know the exact error code to be used, nor can we easily
+         * determine the kind of exception (#GP or #TS) in that case.
+         */
+        if ( is_x86_user_segment(seg) )
+            x86_emul_hw_exception(
+                (seg == x86_seg_ss) ? TRAP_stack_error : TRAP_gp_fault,
+                0, &sh_ctxt->ctxt);
         return X86EMUL_EXCEPTION;
     }
 
@@ -178,6 +185,7 @@ hvm_read(enum x86_segment seg,
          enum hvm_access_type access_type,
          struct sh_emulate_ctxt *sh_ctxt)
 {
+    pagefault_info_t pfinfo;
     unsigned long addr;
     int rc;
 
@@ -187,15 +195,16 @@ hvm_read(enum x86_segment seg,
         return rc;
 
     if ( access_type == hvm_access_insn_fetch )
-        rc = hvm_fetch_from_guest_virt(p_data, addr, bytes, 0);
+        rc = hvm_fetch_from_guest_linear(p_data, addr, bytes, 0, &pfinfo);
     else
-        rc = hvm_copy_from_guest_virt(p_data, addr, bytes, 0);
+        rc = hvm_copy_from_guest_linear(p_data, addr, bytes, 0, &pfinfo);
 
     switch ( rc )
     {
     case HVMCOPY_okay:
         return X86EMUL_OKAY;
     case HVMCOPY_bad_gva_to_gfn:
+        x86_emul_pagefault(pfinfo.ec, pfinfo.linear, &sh_ctxt->ctxt);
         return X86EMUL_EXCEPTION;
     case HVMCOPY_bad_gfn_to_mfn:
     case HVMCOPY_unhandleable:
@@ -309,75 +318,6 @@ static const struct x86_emulate_ops hvm_shadow_emulator_ops = {
     .cpuid      = hvmemul_cpuid,
 };
 
-static int
-pv_emulate_read(enum x86_segment seg,
-                unsigned long offset,
-                void *p_data,
-                unsigned int bytes,
-                struct x86_emulate_ctxt *ctxt)
-{
-    unsigned int rc;
-
-    if ( !is_x86_user_segment(seg) )
-        return X86EMUL_UNHANDLEABLE;
-
-    if ( (rc = copy_from_user(p_data, (void *)offset, bytes)) != 0 )
-    {
-        propagate_page_fault(offset + bytes - rc, 0); /* read fault */
-        return X86EMUL_EXCEPTION;
-    }
-
-    return X86EMUL_OKAY;
-}
-
-static int
-pv_emulate_write(enum x86_segment seg,
-                 unsigned long offset,
-                 void *p_data,
-                 unsigned int bytes,
-                 struct x86_emulate_ctxt *ctxt)
-{
-    struct sh_emulate_ctxt *sh_ctxt =
-        container_of(ctxt, struct sh_emulate_ctxt, ctxt);
-    struct vcpu *v = current;
-    if ( !is_x86_user_segment(seg) )
-        return X86EMUL_UNHANDLEABLE;
-    return v->arch.paging.mode->shadow.x86_emulate_write(
-        v, offset, p_data, bytes, sh_ctxt);
-}
-
-static int
-pv_emulate_cmpxchg(enum x86_segment seg,
-                   unsigned long offset,
-                   void *p_old,
-                   void *p_new,
-                   unsigned int bytes,
-                   struct x86_emulate_ctxt *ctxt)
-{
-    struct sh_emulate_ctxt *sh_ctxt =
-        container_of(ctxt, struct sh_emulate_ctxt, ctxt);
-    unsigned long old, new;
-    struct vcpu *v = current;
-
-    if ( !is_x86_user_segment(seg) || bytes > sizeof(long) )
-        return X86EMUL_UNHANDLEABLE;
-
-    old = new = 0;
-    memcpy(&old, p_old, bytes);
-    memcpy(&new, p_new, bytes);
-
-    return v->arch.paging.mode->shadow.x86_emulate_cmpxchg(
-               v, offset, old, new, bytes, sh_ctxt);
-}
-
-static const struct x86_emulate_ops pv_shadow_emulator_ops = {
-    .read       = pv_emulate_read,
-    .insn_fetch = pv_emulate_read,
-    .write      = pv_emulate_write,
-    .cmpxchg    = pv_emulate_cmpxchg,
-    .cpuid      = pv_emul_cpuid,
-};
-
 const struct x86_emulate_ops *shadow_init_emulation(
     struct sh_emulate_ctxt *sh_ctxt, struct cpu_user_regs *regs)
 {
@@ -385,18 +325,14 @@ const struct x86_emulate_ops *shadow_init_emulation(
     struct vcpu *v = current;
     unsigned long addr;
 
+    ASSERT(has_hvm_container_vcpu(v));
+
+    memset(sh_ctxt, 0, sizeof(*sh_ctxt));
+
     sh_ctxt->ctxt.regs = regs;
-    sh_ctxt->ctxt.force_writeback = 0;
     sh_ctxt->ctxt.swint_emulate = x86_swint_emulate_none;
 
-    if ( is_pv_vcpu(v) )
-    {
-        sh_ctxt->ctxt.addr_size = sh_ctxt->ctxt.sp_size = BITS_PER_LONG;
-        return &pv_shadow_emulator_ops;
-    }
-
     /* Segment cache initialisation. Primed with CS. */
-    sh_ctxt->valid_seg_regs = 0;
     creg = hvm_get_seg_reg(x86_seg_cs, sh_ctxt);
 
     /* Work out the emulation mode. */
@@ -417,8 +353,8 @@ const struct x86_emulate_ops *shadow_init_emulation(
         (!hvm_translate_linear_addr(
             x86_seg_cs, regs->eip, sizeof(sh_ctxt->insn_buf),
             hvm_access_insn_fetch, sh_ctxt, &addr) &&
-         !hvm_fetch_from_guest_virt_nofault(
-             sh_ctxt->insn_buf, addr, sizeof(sh_ctxt->insn_buf), 0))
+         !hvm_fetch_from_guest_linear(
+             sh_ctxt->insn_buf, addr, sizeof(sh_ctxt->insn_buf), 0, NULL))
         ? sizeof(sh_ctxt->insn_buf) : 0;
 
     return &hvm_shadow_emulator_ops;
@@ -432,24 +368,24 @@ void shadow_continue_emulation(struct sh_emulate_ctxt *sh_ctxt,
     struct vcpu *v = current;
     unsigned long addr, diff;
 
-    /* We don't refetch the segment bases, because we don't emulate
-     * writes to segment registers */
+    ASSERT(has_hvm_container_vcpu(v));
 
-    if ( is_hvm_vcpu(v) )
+    /*
+     * We don't refetch the segment bases, because we don't emulate
+     * writes to segment registers
+     */
+    diff = regs->eip - sh_ctxt->insn_buf_eip;
+    if ( diff > sh_ctxt->insn_buf_bytes )
     {
-        diff = regs->eip - sh_ctxt->insn_buf_eip;
-        if ( diff > sh_ctxt->insn_buf_bytes )
-        {
-            /* Prefetch more bytes. */
-            sh_ctxt->insn_buf_bytes =
-                (!hvm_translate_linear_addr(
-                    x86_seg_cs, regs->eip, sizeof(sh_ctxt->insn_buf),
-                    hvm_access_insn_fetch, sh_ctxt, &addr) &&
-                 !hvm_fetch_from_guest_virt_nofault(
-                     sh_ctxt->insn_buf, addr, sizeof(sh_ctxt->insn_buf), 0))
-                ? sizeof(sh_ctxt->insn_buf) : 0;
-            sh_ctxt->insn_buf_eip = regs->eip;
-        }
+        /* Prefetch more bytes. */
+        sh_ctxt->insn_buf_bytes =
+            (!hvm_translate_linear_addr(
+                x86_seg_cs, regs->eip, sizeof(sh_ctxt->insn_buf),
+                hvm_access_insn_fetch, sh_ctxt, &addr) &&
+             !hvm_fetch_from_guest_linear(
+                 sh_ctxt->insn_buf, addr, sizeof(sh_ctxt->insn_buf), 0, NULL))
+            ? sizeof(sh_ctxt->insn_buf) : 0;
+        sh_ctxt->insn_buf_eip = regs->eip;
     }
 }
 
@@ -1462,7 +1398,7 @@ mfn_t shadow_alloc(struct domain *d,
         /* Before we overwrite the old contents of this page,
          * we need to be sure that no TLB holds a pointer to it. */
         cpumask_copy(&mask, d->domain_dirty_cpumask);
-        tlbflush_filter(mask, sp->tlbflush_timestamp);
+        tlbflush_filter(&mask, sp->tlbflush_timestamp);
         if ( unlikely(!cpumask_empty(&mask)) )
         {
             perfc_incr(shadow_alloc_tlbflush);
@@ -1611,13 +1547,7 @@ shadow_free_p2m_page(struct domain *d, struct page_info *pg)
     paging_unlock(d);
 }
 
-/* Set the pool of shadow pages to the required number of pages.
- * Input will be rounded up to at least shadow_min_acceptable_pages(),
- * plus space for the p2m table.
- * Returns 0 for success, non-zero for failure. */
-static unsigned int sh_set_allocation(struct domain *d,
-                                      unsigned int pages,
-                                      int *preempted)
+int shadow_set_allocation(struct domain *d, unsigned int pages, bool *preempted)
 {
     struct page_info *sp;
     unsigned int lower_bound;
@@ -1681,9 +1611,9 @@ static unsigned int sh_set_allocation(struct domain *d,
             break;
 
         /* Check to see if we need to yield and try again */
-        if ( preempted && hypercall_preempt_check() )
+        if ( preempted && general_preempt_check() )
         {
-            *preempted = 1;
+            *preempted = true;
             return 0;
         }
     }
@@ -1720,10 +1650,8 @@ static mfn_t emulate_gva_to_mfn(struct vcpu *v, unsigned long vaddr,
     gfn = paging_get_hostmode(v)->gva_to_gfn(v, NULL, vaddr, &pfec);
     if ( gfn == gfn_x(INVALID_GFN) )
     {
-        if ( is_hvm_vcpu(v) )
-            hvm_inject_page_fault(pfec, vaddr);
-        else
-            propagate_page_fault(vaddr, pfec);
+        x86_emul_pagefault(pfec, vaddr, &sh_ctxt->ctxt);
+
         return _mfn(BAD_GVA_TO_GFN);
     }
 
@@ -1808,7 +1736,8 @@ void *sh_emulate_map_dest(struct vcpu *v, unsigned long vaddr,
     else
     {
         /* This write crosses a page boundary. Translate the second page. */
-        sh_ctxt->mfn[1] = emulate_gva_to_mfn(v, vaddr + bytes - 1, sh_ctxt);
+        sh_ctxt->mfn[1] = emulate_gva_to_mfn(
+            v, (vaddr + bytes - 1) & PAGE_MASK, sh_ctxt);
         if ( !mfn_valid(sh_ctxt->mfn[1]) )
             return ((mfn_x(sh_ctxt->mfn[1]) == BAD_GVA_TO_GFN) ?
                     MAPPING_EXCEPTION :
@@ -3142,8 +3071,7 @@ int shadow_enable(struct domain *d, u32 mode)
     domain_pause(d);
 
     /* Sanity check the arguments */
-    if ( shadow_mode_enabled(d) ||
-         ((mode & PG_translate) && !(mode & PG_refcounts)) )
+    if ( shadow_mode_enabled(d) )
     {
         rv = -EINVAL;
         goto out_unlocked;
@@ -3153,13 +3081,11 @@ int shadow_enable(struct domain *d, u32 mode)
     old_pages = d->arch.paging.shadow.total_pages;
     if ( old_pages == 0 )
     {
-        unsigned int r;
         paging_lock(d);
-        r = sh_set_allocation(d, 1024, NULL); /* Use at least 4MB */
-        if ( r != 0 )
+        rv = shadow_set_allocation(d, 1024, NULL); /* Use at least 4MB */
+        if ( rv != 0 )
         {
-            sh_set_allocation(d, 0, NULL);
-            rv = -ENOMEM;
+            shadow_set_allocation(d, 0, NULL);
             goto out_locked;
         }
         paging_unlock(d);
@@ -3241,7 +3167,7 @@ int shadow_enable(struct domain *d, u32 mode)
     return rv;
 }
 
-void shadow_teardown(struct domain *d, int *preempted)
+void shadow_teardown(struct domain *d, bool *preempted)
 /* Destroy the shadow pagetables of this domain and free its shadow memory.
  * Should only be called for dying domains. */
 {
@@ -3303,7 +3229,7 @@ void shadow_teardown(struct domain *d, int *preempted)
     if ( d->arch.paging.shadow.total_pages != 0 )
     {
         /* Destroy all the shadows and release memory to domheap */
-        sh_set_allocation(d, 0, preempted);
+        shadow_set_allocation(d, 0, preempted);
 
         if ( preempted && *preempted )
             goto out;
@@ -3368,7 +3294,7 @@ void shadow_final_teardown(struct domain *d)
     p2m_teardown(p2m_get_hostp2m(d));
     /* Free any shadow memory that the p2m teardown released */
     paging_lock(d);
-    sh_set_allocation(d, 0, NULL);
+    shadow_set_allocation(d, 0, NULL);
     SHADOW_PRINTK("dom %u final teardown done."
                    "  Shadow pages total = %u, free = %u, p2m=%u\n",
                    d->domain_id,
@@ -3394,9 +3320,9 @@ static int shadow_one_bit_enable(struct domain *d, u32 mode)
     if ( d->arch.paging.shadow.total_pages == 0 )
     {
         /* Init the shadow memory allocation if the user hasn't done so */
-        if ( sh_set_allocation(d, 1, NULL) != 0 )
+        if ( shadow_set_allocation(d, 1, NULL) != 0 )
         {
-            sh_set_allocation(d, 0, NULL);
+            shadow_set_allocation(d, 0, NULL);
             return -ENOMEM;
         }
     }
@@ -3465,7 +3391,7 @@ static int shadow_one_bit_disable(struct domain *d, u32 mode)
         }
 
         /* Pull down the memory allocation */
-        if ( sh_set_allocation(d, 0, NULL) != 0 )
+        if ( shadow_set_allocation(d, 0, NULL) != 0 )
             BUG(); /* In fact, we will have BUG()ed already */
         shadow_hash_teardown(d);
         SHADOW_PRINTK("un-shadowing of domain %u done."
@@ -3878,7 +3804,8 @@ int shadow_domctl(struct domain *d,
                   xen_domctl_shadow_op_t *sc,
                   XEN_GUEST_HANDLE_PARAM(void) u_domctl)
 {
-    int rc, preempted = 0;
+    int rc;
+    bool preempted = false;
 
     switch ( sc->op )
     {
@@ -3909,7 +3836,7 @@ int shadow_domctl(struct domain *d,
             paging_unlock(d);
             return -EINVAL;
         }
-        rc = sh_set_allocation(d, sc->mb << (20 - PAGE_SHIFT), &preempted);
+        rc = shadow_set_allocation(d, sc->mb << (20 - PAGE_SHIFT), &preempted);
         paging_unlock(d);
         if ( preempted )
             /* Not finished.  Set up to re-run the call. */

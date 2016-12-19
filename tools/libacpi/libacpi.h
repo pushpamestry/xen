@@ -30,6 +30,11 @@
 #define ACPI_HAS_TCPA        (1<<7)
 #define ACPI_HAS_IOAPIC      (1<<8)
 #define ACPI_HAS_WAET        (1<<9)
+#define ACPI_HAS_PMTIMER     (1<<10)
+#define ACPI_HAS_BUTTONS     (1<<11)
+#define ACPI_HAS_VGA         (1<<12)
+#define ACPI_HAS_8042        (1<<13)
+#define ACPI_HAS_CMOS_RTC    (1<<14)
 
 struct xen_vmemrange;
 struct acpi_numa {
@@ -59,6 +64,7 @@ struct acpi_config {
     uint64_t pci_hi_start, pci_hi_len;
 
     uint32_t table_flags;
+    uint8_t acpi_revision;
 
     uint64_t vm_gid[2];
     unsigned long vm_gid_addr; /* OUT parameter */

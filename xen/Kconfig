@@ -12,6 +12,9 @@ config ARCH
 	string
 	option env="ARCH"
 
+config BROKEN
+	bool
+
 source "arch/$SRCARCH/Kconfig"
 
 config XEN_FULLVERSION
@@ -26,5 +29,13 @@ config DEFCONFIG_LIST
 config EXPERT
 	string
 	option env="XEN_CONFIG_EXPERT"
+
+config LTO
+	bool "Link Time Optimisation"
+	depends on BROKEN
+	---help---
+	  Enable Link Time Optimisation.
+
+	  If unsure, say N.
 
 source "Kconfig.debug"

@@ -140,8 +140,6 @@ void p2m_restore_state(struct vcpu *n)
         return;
 
     hcr = READ_SYSREG(HCR_EL2);
-    WRITE_SYSREG(hcr & ~HCR_VM, HCR_EL2);
-    isb();
 
     WRITE_SYSREG64(p2m->vttbr, VTTBR_EL2);
     isb();
@@ -1641,7 +1639,7 @@ void __init setup_virt_paging(void)
     }
 
     /* pa_range is 4 bits, but the defined encodings are only 3 bits */
-    if ( pa_range&0x8 || !pa_range_info[pa_range].pabits )
+    if ( pa_range >= ARRAY_SIZE(pa_range_info) || !pa_range_info[pa_range].pabits )
         panic("Unknown encoding of ID_AA64MMFR0_EL1.PARange %x\n", pa_range);
 
     val |= VTCR_PS(pa_range);
