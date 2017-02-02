@@ -31,7 +31,17 @@
 #define likely(x)   __builtin_expect(!!(x), true)
 #define unlikely(x) __builtin_expect(!!(x), false)
 
+#define container_of(ptr, type, member) ({             \
+    typeof(((type *)0)->member) *mptr__ = (ptr);       \
+    (type *)((char *)mptr__ - offsetof(type, member)); \
+})
+
 #define is_canonical_address(x) (((int64_t)(x) >> 47) == ((int64_t)(x) >> 63))
+
+/* There's no strict need for these to be in sync with processor.h. */
+#define X86_VENDOR_INTEL   0
+#define X86_VENDOR_AMD     2
+#define X86_VENDOR_UNKNOWN 0xff
 
 #define MMAP_SZ 16384
 bool emul_test_make_stack_executable(void);
@@ -48,61 +58,83 @@ static inline uint64_t xgetbv(uint32_t xcr)
 }
 
 #define cache_line_size() ({		     \
-    unsigned int eax = 1, ebx, ecx = 0, edx; \
-    emul_test_cpuid(&eax, &ebx, &ecx, &edx, NULL); \
-    edx & (1U << 19) ? (ebx >> 5) & 0x7f8 : 0; \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(1, 0, &res, NULL); \
+    res.d & (1U << 19) ? (res.b >> 5) & 0x7f8 : 0; \
 })
 
 #define cpu_has_mmx ({ \
-    unsigned int eax = 1, ecx = 0, edx; \
-    emul_test_cpuid(&eax, &ecx, &ecx, &edx, NULL); \
-    (edx & (1U << 23)) != 0; \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(1, 0, &res, NULL); \
+    (res.d & (1U << 23)) != 0; \
 })
 
 #define cpu_has_sse ({ \
-    unsigned int eax = 1, ecx = 0, edx; \
-    emul_test_cpuid(&eax, &ecx, &ecx, &edx, NULL); \
-    (edx & (1U << 25)) != 0; \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(1, 0, &res, NULL); \
+    (res.d & (1U << 25)) != 0; \
 })
 
 #define cpu_has_sse2 ({ \
-    unsigned int eax = 1, ecx = 0, edx; \
-    emul_test_cpuid(&eax, &ecx, &ecx, &edx, NULL); \
-    (edx & (1U << 26)) != 0; \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(1, 0, &res, NULL); \
+    (res.d & (1U << 26)) != 0; \
+})
+
+#define cpu_has_popcnt ({ \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(1, 0, &res, NULL); \
+    (res.c & (1U << 23)) != 0; \
 })
 
 #define cpu_has_xsave ({ \
-    unsigned int eax = 1, ecx = 0; \
-    emul_test_cpuid(&eax, &eax, &ecx, &eax, NULL); \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(1, 0, &res, NULL); \
     /* Intentionally checking OSXSAVE here. */ \
-    (ecx & (1U << 27)) != 0; \
+    (res.c & (1U << 27)) != 0; \
 })
 
 #define cpu_has_avx ({ \
-    unsigned int eax = 1, ecx = 0; \
-    emul_test_cpuid(&eax, &eax, &ecx, &eax, NULL); \
-    if ( !(ecx & (1U << 27)) || ((xgetbv(0) & 6) != 6) ) \
-        ecx = 0; \
-    (ecx & (1U << 28)) != 0; \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(1, 0, &res, NULL); \
+    if ( !(res.c & (1U << 27)) || ((xgetbv(0) & 6) != 6) ) \
+        res.c = 0; \
+    (res.c & (1U << 28)) != 0; \
 })
 
 #define cpu_has_avx2 ({ \
-    unsigned int eax = 1, ebx, ecx = 0; \
-    emul_test_cpuid(&eax, &ebx, &ecx, &eax, NULL); \
-    if ( !(ecx & (1U << 27)) || ((xgetbv(0) & 6) != 6) ) \
-        ebx = 0; \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(1, 0, &res, NULL); \
+    if ( !(res.c & (1U << 27)) || ((xgetbv(0) & 6) != 6) ) \
+        res.b = 0; \
     else { \
-        eax = 7, ecx = 0; \
-        emul_test_cpuid(&eax, &ebx, &ecx, &eax, NULL); \
+        emul_test_cpuid(7, 0, &res, NULL); \
     } \
-    (ebx & (1U << 5)) != 0; \
+    (res.b & (1U << 5)) != 0; \
+})
+
+#define cpu_has_bmi1 ({ \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(7, 0, &res, NULL); \
+    (res.b & (1U << 3)) != 0; \
+})
+
+#define cpu_has_bmi2 ({ \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(7, 0, &res, NULL); \
+    (res.b & (1U << 8)) != 0; \
+})
+
+#define cpu_has_tbm ({ \
+    struct cpuid_leaf res; \
+    emul_test_cpuid(0x80000001, 0, &res, NULL); \
+    (res.c & (1U << 21)) != 0; \
 })
 
 int emul_test_cpuid(
-    unsigned int *eax,
-    unsigned int *ebx,
-    unsigned int *ecx,
-    unsigned int *edx,
+    uint32_t leaf,
+    uint32_t subleaf,
+    struct cpuid_leaf *res,
     struct x86_emulate_ctxt *ctxt);
 
 int emul_test_read_cr(

@@ -77,6 +77,9 @@ enum hvm_intblk {
 #define HVM_HAP_SUPERPAGE_2MB   0x00000001
 #define HVM_HAP_SUPERPAGE_1GB   0x00000002
 
+#define HVM_EVENT_VECTOR_UNSET    (-1)
+#define HVM_EVENT_VECTOR_UPDATING (-2)
+
 /*
  * The hardware virtual machine (HVM) interface abstracts away from the
  * x86/x86_64 CPU virtualization assist specifics. Currently this interface
@@ -117,6 +120,7 @@ struct hvm_function_table {
     unsigned int (*get_interrupt_shadow)(struct vcpu *v);
     void (*set_interrupt_shadow)(struct vcpu *v, unsigned int intr_shadow);
     int (*guest_x86_mode)(struct vcpu *v);
+    unsigned int (*get_cpl)(struct vcpu *v);
     void (*get_segment_register)(struct vcpu *v, enum x86_segment seg,
                                  struct segment_register *reg);
     void (*set_segment_register)(struct vcpu *v, enum x86_segment seg,
@@ -149,6 +153,7 @@ struct hvm_function_table {
     void (*init_hypercall_page)(struct domain *d, void *hypercall_page);
 
     int  (*event_pending)(struct vcpu *v);
+    bool (*get_pending_event)(struct vcpu *v, struct x86_event *info);
     void (*invlpg)(struct vcpu *v, unsigned long vaddr);
 
     int  (*cpu_up_prepare)(unsigned int cpu);
@@ -206,7 +211,7 @@ struct hvm_function_table {
     void (*altp2m_vcpu_update_p2m)(struct vcpu *v);
     void (*altp2m_vcpu_update_vmfunc_ve)(struct vcpu *v);
     bool_t (*altp2m_vcpu_emulate_ve)(struct vcpu *v);
-    int (*altp2m_vcpu_emulate_vmfunc)(struct cpu_user_regs *regs);
+    int (*altp2m_vcpu_emulate_vmfunc)(const struct cpu_user_regs *regs);
 
     /*
      * Parameters and callbacks for hardware-assisted TSC scaling,
@@ -246,8 +251,6 @@ void hvm_vcpu_reset_state(struct vcpu *v, uint16_t cs, uint16_t ip);
 void hvm_get_guest_pat(struct vcpu *v, u64 *guest_pat);
 int hvm_set_guest_pat(struct vcpu *v, u64 guest_pat);
 
-void hvm_set_guest_tsc_fixed(struct vcpu *v, u64 guest_tsc, u64 at_tsc);
-#define hvm_set_guest_tsc(v, t) hvm_set_guest_tsc_fixed(v, t, 0)
 u64 hvm_get_guest_tsc_fixed(struct vcpu *v, u64 at_tsc);
 #define hvm_get_guest_tsc(v) hvm_get_guest_tsc_fixed(v, 0)
 
@@ -351,6 +354,12 @@ static inline void hvm_flush_guest_tlbs(void)
 void hvm_hypercall_page_initialise(struct domain *d,
                                    void *hypercall_page);
 
+static inline unsigned int
+hvm_get_cpl(struct vcpu *v)
+{
+    return hvm_funcs.get_cpl(v);
+}
+
 void hvm_get_segment_register(struct vcpu *v, enum x86_segment seg,
                               struct segment_register *reg);
 void hvm_set_segment_register(struct vcpu *v, enum x86_segment seg,
@@ -384,8 +393,6 @@ bool hvm_set_guest_bndcfgs(struct vcpu *v, u64 val);
 #define has_viridian_apic_assist(d) \
     (is_viridian_domain(d) && (viridian_feature_mask(d) & HVMPV_apic_assist))
 
-void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
-                                   unsigned int *ecx, unsigned int *edx);
 bool hvm_check_cpuid_faulting(struct vcpu *v);
 void hvm_migrate_timers(struct vcpu *v);
 void hvm_do_resume(struct vcpu *v);
@@ -607,7 +614,7 @@ static inline bool altp2m_vcpu_emulate_ve(struct vcpu *v)
 /* Check CR4/EFER values */
 const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
                            signed int cr0_pg);
-unsigned long hvm_cr4_guest_reserved_bits(const struct vcpu *v, bool_t restore);
+unsigned long hvm_cr4_guest_valid_bits(const struct vcpu *v, bool restore);
 
 /*
  * This must be defined as a macro instead of an inline function,
@@ -618,8 +625,8 @@ unsigned long hvm_cr4_guest_reserved_bits(const struct vcpu *v, bool_t restore);
     struct vcpu *v_ = (v);                                      \
     struct domain *d_ = v_->domain;                             \
     if ( has_hvm_container_domain(d_) &&                        \
-         (cpu_has_vmx && d_->arch.hvm_domain.vmx.vcpu_block) )  \
-        d_->arch.hvm_domain.vmx.vcpu_block(v_);                 \
+         (d_->arch.hvm_domain.pi_ops.vcpu_block) )          \
+        d_->arch.hvm_domain.pi_ops.vcpu_block(v_);          \
 })
 
 #endif /* __ASM_X86_HVM_HVM_H__ */

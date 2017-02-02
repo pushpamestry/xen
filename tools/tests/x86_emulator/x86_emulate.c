@@ -7,12 +7,17 @@
 
 #define cpu_has_amd_erratum(nr) 0
 #define mark_regs_dirty(r) ((void)(r))
+#define cpu_has_mpx false
+#define read_bndcfgu() 0
+#define xstate_set_init(what)
 
 /* For generic assembly code: use macros to define operation/operand sizes. */
 #ifdef __i386__
+# define r(name)       e ## name
 # define __OS          "l"  /* Operation Suffix */
 # define __OP          "e"  /* Operand Prefix */
 #else
+# define r(name)       r ## name
 # define __OS          "q"  /* Operation Suffix */
 # define __OP          "r"  /* Operand Prefix */
 #endif
@@ -39,22 +44,31 @@ bool emul_test_make_stack_executable(void)
 }
 
 int emul_test_cpuid(
-    unsigned int *eax,
-    unsigned int *ebx,
-    unsigned int *ecx,
-    unsigned int *edx,
+    uint32_t leaf,
+    uint32_t subleaf,
+    struct cpuid_leaf *res,
     struct x86_emulate_ctxt *ctxt)
 {
-    unsigned int leaf = *eax;
-
-    asm ("cpuid" : "+a" (*eax), "+c" (*ecx), "=d" (*edx), "=b" (*ebx));
+    asm ("cpuid"
+         : "=a" (res->a), "=b" (res->b), "=c" (res->c), "=d" (res->d)
+         : "a" (leaf), "c" (subleaf));
 
     /*
      * The emulator doesn't itself use MOVBE, so we can always run the
      * respective tests.
      */
     if ( leaf == 1 )
-        *ecx |= 1U << 22;
+        res->c |= 1U << 22;
+
+    /*
+     * The emulator doesn't itself use ADCX/ADOX/RDPID, so we can always run
+     * the respective tests.
+     */
+    if ( leaf == 7 && subleaf == 0 )
+    {
+        res->b |= 1U << 19;
+        res->c |= 1U << 22;
+    }
 
     return X86EMUL_OKAY;
 }

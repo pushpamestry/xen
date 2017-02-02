@@ -45,6 +45,7 @@ docs/man/xl.cfg.pod.5
 docs/man/xl.pod.1
 docs/man1/
 docs/man5/
+docs/man7/
 docs/man8/
 docs/pdf/
 docs/txt/
@@ -145,7 +146,9 @@ tools/flask/utils/flask-loadpolicy
 tools/flask/utils/flask-setenforce
 tools/flask/utils/flask-set-bool
 tools/flask/utils/flask-label-pci
+tools/fuzz/libelf/afl-libelf-fuzzer
 tools/fuzz/x86_instruction_emulator/x86_emulate*
+tools/fuzz/x86_instruction_emulator/afl-x86-insn-emulator-fuzzer
 tools/helpers/_paths.h
 tools/helpers/init-xenstore-domain
 tools/helpers/xen-init-dom0
@@ -211,6 +214,7 @@ tools/tests/x86_emulator/blowfish.h
 tools/tests/x86_emulator/test_x86_emulator
 tools/tests/x86_emulator/x86_emulate
 tools/tests/xen-access/xen-access
+tools/tests/xenstore/xs-test
 tools/tests/regression/installed/*
 tools/tests/regression/build/*
 tools/tests/regression/downloads/*
@@ -251,9 +255,10 @@ xen/arch/arm/xen.lds
 xen/arch/x86/asm-offsets.s
 xen/arch/x86/boot/mkelf32
 xen/arch/x86/xen.lds
+xen/arch/x86/boot/cmdline.S
 xen/arch/x86/boot/reloc.S
-xen/arch/x86/boot/reloc.bin
-xen/arch/x86/boot/reloc.lnk
+xen/arch/x86/boot/*.bin
+xen/arch/x86/boot/*.lnk
 xen/arch/x86/efi.lds
 xen/arch/x86/efi/check.efi
 xen/arch/x86/efi/disabled

@@ -65,12 +65,7 @@ static void poll_timer_fn(void *data);
 DEFINE_PER_CPU(struct schedule_data, schedule_data);
 DEFINE_PER_CPU(struct scheduler *, scheduler);
 
-/*
- * Scratch space, for avoiding having too many cpumask_var_t on the stack.
- * Properly serializing access, if necessary, is responsibility of each
- * scheduler (typically, one can expect this to be protected by the per pCPU
- * or per runqueue lock).
- */
+/* Scratch space for cpumasks. */
 DEFINE_PER_CPU(cpumask_t, cpumask_scratch);
 
 extern const struct scheduler *__start_schedulers_array[], *__end_schedulers_array[];
@@ -633,29 +628,46 @@ void vcpu_force_reschedule(struct vcpu *v)
 
 void restore_vcpu_affinity(struct domain *d)
 {
+    unsigned int cpu = smp_processor_id();
     struct vcpu *v;
+
+    ASSERT(system_state == SYS_STATE_resume);
 
     for_each_vcpu ( d, v )
     {
-        spinlock_t *lock = vcpu_schedule_lock_irq(v);
+        spinlock_t *lock;
+
+        ASSERT(!vcpu_runnable(v));
+
+        lock = vcpu_schedule_lock_irq(v);
 
         if ( v->affinity_broken )
         {
             cpumask_copy(v->cpu_hard_affinity, v->cpu_hard_affinity_saved);
             v->affinity_broken = 0;
+
         }
 
-        if ( v->processor == smp_processor_id() )
-        {
-            set_bit(_VPF_migrating, &v->pause_flags);
-            vcpu_schedule_unlock_irq(lock, v);
-            vcpu_sleep_nosync(v);
-            vcpu_migrate(v);
-        }
-        else
-        {
-            vcpu_schedule_unlock_irq(lock, v);
-        }
+        /*
+         * During suspend (in cpu_disable_scheduler()), we moved every vCPU
+         * to BSP (which, as of now, is pCPU 0), as a temporary measure to
+         * allow the nonboot processors to have their data structure freed
+         * and go to sleep. But nothing guardantees that the BSP is a valid
+         * pCPU for a particular domain.
+         *
+         * Therefore, here, before actually unpausing the domains, we should
+         * set v->processor of each of their vCPUs to something that will
+         * make sense for the scheduler of the cpupool in which they are in.
+         */
+        cpumask_and(cpumask_scratch_cpu(cpu), v->cpu_hard_affinity,
+                    cpupool_domain_cpumask(v->domain));
+        v->processor = cpumask_any(cpumask_scratch_cpu(cpu));
+
+        spin_unlock_irq(lock);;
+
+        lock = vcpu_schedule_lock_irq(v);
+        v->processor = SCHED_OP(VCPU2OP(v), pick_cpu, v);
+        spin_unlock_irq(lock);
     }
 
     domain_update_node_affinity(d);
@@ -1832,6 +1844,7 @@ void schedule_dump(struct cpupool *c)
         cpus = &cpupool_free_cpus;
     }
 
+    printk("CPUs info:\n");
     for_each_cpu (i, cpus)
     {
         printk("CPU[%02d] ", i);

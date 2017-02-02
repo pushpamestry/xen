@@ -9,11 +9,13 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <xenctrl.h>
 #include <xenstore.h>
 
 #include <xen/errno.h>
+#include <xen-tools/libs.h>
 
 static xc_interface *xch;
 
@@ -100,8 +102,10 @@ static int list_func(int argc, char *argv[])
         rc = xc_livepatch_list(xch, MAX_LEN, idx, info, name, len, &done, &left);
         if ( rc )
         {
-            fprintf(stderr, "Failed to list %d/%d: %d(%s)!\n",
-                    idx, left, errno, strerror(errno));
+            rc = errno;
+            fprintf(stderr, "Failed to list %d/%d.\n"
+                            "Error %d: %s\n",
+                    idx, left, rc, strerror(rc));
             break;
         }
         if ( !idx )
@@ -140,7 +144,8 @@ static int get_name(int argc, char *argv[], char *name)
     ssize_t len = strlen(argv[0]);
     if ( len > XEN_LIVEPATCH_NAME_SIZE )
     {
-        fprintf(stderr, "ID MUST be %d characters!\n", XEN_LIVEPATCH_NAME_SIZE);
+        fprintf(stderr, "ID must be no more than %d characters.\n",
+                XEN_LIVEPATCH_NAME_SIZE);
         errno = EINVAL;
         return errno;
     }
@@ -172,39 +177,50 @@ static int upload_func(int argc, char *argv[])
     fd = open(filename, O_RDONLY);
     if ( fd < 0 )
     {
-        fprintf(stderr, "Could not open %s, error: %d(%s)\n",
-                filename, errno, strerror(errno));
-        return errno;
+        int saved_errno = errno;
+        fprintf(stderr, "Could not open %s.\n"
+                        "Error %d: %s\n",
+                filename, saved_errno, strerror(saved_errno));
+        return saved_errno;
     }
     if ( stat(filename, &buf) != 0 )
     {
-        fprintf(stderr, "Could not get right size %s, error: %d(%s)\n",
-                filename, errno, strerror(errno));
+        int saved_errno = errno;
+        fprintf(stderr, "Could not get size of %s.\n"
+                        "Error %d: %s\n",
+                filename, saved_errno, strerror(saved_errno));
         close(fd);
-        return errno;
+        return saved_errno;
     }
 
     len = buf.st_size;
     fbuf = mmap(0, len, PROT_READ, MAP_PRIVATE, fd, 0);
     if ( fbuf == MAP_FAILED )
     {
-        fprintf(stderr,"Could not map: %s, error: %d(%s)\n",
-                filename, errno, strerror(errno));
+        int saved_errno = errno;
+        fprintf(stderr, "Could not map %s.\n"
+                        "Error %d: %s\n",
+                filename, saved_errno, strerror(saved_errno));
         close (fd);
-        return errno;
+        return saved_errno;
     }
-    printf("Uploading %s (%zu bytes)\n", filename, len);
+    printf("Uploading %s... ", filename);
     rc = xc_livepatch_upload(xch, name, fbuf, len);
     if ( rc )
-        fprintf(stderr, "Upload failed: %s, error: %d(%s)!\n",
-                filename, errno, strerror(errno));
+    {
+        rc = errno;
+        printf("failed\n");
+        fprintf(stderr, "Error %d: %s\n", rc, strerror(rc));
+    }
+    else
+        printf("completed\n");
+
 
     if ( munmap( fbuf, len) )
     {
-        fprintf(stderr, "Could not unmap!? error: %d(%s)!\n",
-                errno, strerror(errno));
-        if ( !rc )
-            rc = errno;
+        fprintf(stderr, "Could not unmap %s.\n"
+                        "Error %d: %s\n",
+                filename, errno, strerror(errno));
     }
     close(fd);
 
@@ -223,42 +239,60 @@ struct {
     int allow; /* State it must be in to call function. */
     int expected; /* The state to be in after the function. */
     const char *name;
+    const char *verb;
     int (*function)(xc_interface *xch, char *name, uint32_t timeout);
-    unsigned int executed; /* Has the function been called?. */
 } action_options[] = {
     {   .allow = LIVEPATCH_STATE_CHECKED,
         .expected = LIVEPATCH_STATE_APPLIED,
         .name = "apply",
+        .verb = "Applying",
         .function = xc_livepatch_apply,
     },
     {   .allow = LIVEPATCH_STATE_APPLIED,
         .expected = LIVEPATCH_STATE_CHECKED,
         .name = "revert",
+        .verb = "Reverting",
         .function = xc_livepatch_revert,
     },
     {   .allow = LIVEPATCH_STATE_CHECKED,
         .expected = -XEN_ENOENT,
         .name = "unload",
+        .verb = "Unloading",
         .function = xc_livepatch_unload,
     },
     {   .allow = LIVEPATCH_STATE_CHECKED,
         .expected = LIVEPATCH_STATE_APPLIED,
         .name = "replace",
+        .verb = "Replacing all live patches with",
         .function = xc_livepatch_replace,
     },
 };
 
-/* Go around 300 * 0.1 seconds = 30 seconds. */
-#define RETRIES 300
-/* aka 0.1 second */
-#define DELAY 100000
+/* The hypervisor timeout for the live patching operation is 30 msec,
+ * but it could take some time for the operation to start, so wait twice
+ * that period. */
+#define HYPERVISOR_TIMEOUT_NS 30000000
+#define DELAY (2 * HYPERVISOR_TIMEOUT_NS)
+
+static void nanosleep_retry(long ns)
+{
+    struct timespec req, rem;
+    int rc;
+
+    rem.tv_sec = 0;
+    rem.tv_nsec = ns;
+
+    do {
+        req = rem;
+        rc = nanosleep(&req, &rem);
+    } while ( rc == -1 && errno == EINTR );
+}
 
 int action_func(int argc, char *argv[], unsigned int idx)
 {
     char name[XEN_LIVEPATCH_NAME_SIZE];
-    int rc, original_state;
+    int rc;
     xen_livepatch_status_t status;
-    unsigned int retry = 0;
 
     if ( argc != 1 )
     {
@@ -276,88 +310,85 @@ int action_func(int argc, char *argv[], unsigned int idx)
     rc = xc_livepatch_get(xch, name, &status);
     if ( rc )
     {
-        fprintf(stderr, "%s failed to get status %d(%s)!\n",
-                name, errno, strerror(errno));
-        return -1;
+        int saved_errno = errno;
+        fprintf(stderr, "Failed to get status of %s.\n"
+                        "Error %d: %s\n",
+                name, saved_errno, strerror(saved_errno));
+        return saved_errno;
     }
     if ( status.rc == -XEN_EAGAIN )
     {
-        fprintf(stderr, "%s failed. Operation already in progress\n", name);
-        return -1;
+        fprintf(stderr,
+                "Cannot execute %s.\n"
+                "Operation already in progress.\n", action_options[idx].name);
+        return EAGAIN;
     }
 
     if ( status.state == action_options[idx].expected )
     {
-        printf("No action needed\n");
+        printf("No action needed.\n");
         return 0;
     }
 
     /* Perform action. */
     if ( action_options[idx].allow & status.state )
     {
-        printf("Performing %s:", action_options[idx].name);
-        rc = action_options[idx].function(xch, name, 0);
+        printf("%s %s... ", action_options[idx].verb, name);
+        rc = action_options[idx].function(xch, name, HYPERVISOR_TIMEOUT_NS);
         if ( rc )
         {
-            fprintf(stderr, "%s failed with %d(%s)\n", name, errno,
-                    strerror(errno));
-            return -1;
+            int saved_errno = errno;
+            printf("failed\n");
+            fprintf(stderr, "Error %d: %s\n",
+                    saved_errno, strerror(saved_errno));
+            return saved_errno;
         }
     }
     else
     {
-        printf("%s: in wrong state (%s), expected (%s)\n",
-               name, state2str(status.state),
-               state2str(action_options[idx].expected));
+        fprintf(stderr, "%s is in the wrong state.\n"
+                        "Current state: %s\n"
+                        "Expected state: %s\n",
+                name, state2str(status.state),
+                state2str(action_options[idx].allow));
         return -1;
     }
 
-    original_state = status.state;
-    do {
-        rc = xc_livepatch_get(xch, name, &status);
-        if ( rc )
-        {
-            rc = -errno;
-            break;
-        }
+    nanosleep_retry(DELAY);
+    rc = xc_livepatch_get(xch, name, &status);
 
-        if ( status.state != original_state )
-            break;
-        if ( status.rc && status.rc != -XEN_EAGAIN )
-        {
-            rc = status.rc;
-            break;
-        }
+    if ( rc )
+        rc = -errno;
+    else if ( status.rc )
+        rc = status.rc;
 
-        printf(".");
-        fflush(stdout);
-        usleep(DELAY);
-    } while ( ++retry < RETRIES );
-
-    if ( retry >= RETRIES )
+    if ( rc == -XEN_EAGAIN )
     {
-        fprintf(stderr, "%s: Operation didn't complete after 30 seconds.\n", name);
-        return -1;
+        printf("failed\n");
+        fprintf(stderr, "Operation didn't complete.\n");
+        return EAGAIN;
+    }
+
+    if ( rc == 0 )
+        rc = status.state;
+
+    if ( action_options[idx].expected == rc )
+        printf("completed\n");
+    else if ( rc < 0 )
+    {
+        printf("failed\n");
+        fprintf(stderr, "Error %d: %s\n", -rc, strerror(-rc));
+        return -rc;
     }
     else
     {
-        if ( rc == 0 )
-            rc = status.state;
-
-        if ( action_options[idx].expected == rc )
-            printf(" completed\n");
-        else if ( rc < 0 )
-        {
-            fprintf(stderr, "%s failed with %d(%s)\n", name, -rc, strerror(-rc));
-            return -1;
-        }
-        else
-        {
-            fprintf(stderr, "%s: in wrong state (%s), expected (%s)\n",
-               name, state2str(rc),
-               state2str(action_options[idx].expected));
-            return -1;
-        }
+        printf("failed\n");
+        fprintf(stderr, "%s is in the wrong state.\n"
+                        "Current state: %s\n"
+                        "Expected state: %s\n",
+                name, state2str(rc),
+                state2str(action_options[idx].expected));
+        return -1;
     }
 
     return 0;
@@ -416,6 +447,12 @@ int main(int argc, char *argv[])
 {
     int i, j = 0, ret;
 
+    /*
+     * Set stdout to be unbuffered to avoid having to fflush when
+     * printing without a newline.
+     */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     if ( argc  <= 1 )
     {
         show_help();
@@ -453,7 +490,28 @@ int main(int argc, char *argv[])
 
     xc_interface_close(xch);
 
-    return !!ret;
+    /*
+     * Exitcode 0 for success.
+     * Exitcode 1 for an error.
+     * Exitcode 2 if the operation should be retried for any reason (e.g. a
+     * timeout or because another operation was in progress).
+     */
+#define EXIT_TIMEOUT (EXIT_FAILURE + 1)
+
+    BUILD_BUG_ON(EXIT_SUCCESS != 0);
+    BUILD_BUG_ON(EXIT_FAILURE != 1);
+    BUILD_BUG_ON(EXIT_TIMEOUT != 2);
+
+    switch ( ret )
+    {
+    case 0:
+        return EXIT_SUCCESS;
+    case EAGAIN:
+    case EBUSY:
+        return EXIT_TIMEOUT;
+    default:
+        return EXIT_FAILURE;
+    }
 }
 
 /*

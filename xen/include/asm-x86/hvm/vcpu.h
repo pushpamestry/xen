@@ -97,8 +97,6 @@ static inline bool_t hvm_vcpu_io_need_completion(const struct hvm_vcpu_io *vio)
            !vio->io_req.data_is_ptr;
 }
 
-#define VMCX_EADDR    (~0ULL)
-
 struct nestedvcpu {
     bool_t nv_guestmode; /* vcpu in guestmode? */
     void *nv_vvmcx; /* l1 guest virtual VMCB/VMCS */
@@ -164,12 +162,12 @@ struct hvm_vcpu {
     spinlock_t          tm_lock;
     struct list_head    tm_list;
 
-    u8                  flag_dr_dirty;
-    bool_t              debug_state_latch;
-    bool_t              single_step;
+    bool                flag_dr_dirty;
+    bool                debug_state_latch;
+    bool                single_step;
 
-    bool_t              hcall_preempted;
-    bool_t              hcall_64bit;
+    bool                hcall_preempted;
+    bool                hcall_64bit;
 
     struct hvm_vcpu_asid n1asid;
 
@@ -206,7 +204,7 @@ struct hvm_vcpu {
     void *fpu_exception_callback_arg;
 
     /* Pending hw/sw interrupt (.vector = -1 means nothing pending). */
-    struct x86_event     inject_trap;
+    struct x86_event     inject_event;
 
     struct viridian_vcpu viridian;
 };

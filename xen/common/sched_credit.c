@@ -941,6 +941,7 @@ csched_vcpu_acct(struct csched_private *prv, unsigned int cpu)
 
     ASSERT( current->processor == cpu );
     ASSERT( svc->sdom != NULL );
+    ASSERT( !is_idle_vcpu(svc->vcpu) );
 
     /*
      * If this VCPU's priority was boosted when it last awoke, reset it.
@@ -957,8 +958,7 @@ csched_vcpu_acct(struct csched_private *prv, unsigned int cpu)
     /*
      * Update credits
      */
-    if ( !is_idle_vcpu(svc->vcpu) )
-        burn_credits(svc, NOW());
+    burn_credits(svc, NOW());
 
     /*
      * Put this VCPU and domain back on the active list if it was
@@ -1636,9 +1636,8 @@ csched_runq_steal(int peer_cpu, int cpu, int pri, int balance_step)
                  && !__vcpu_has_soft_affinity(vc, vc->cpu_hard_affinity) )
                 continue;
 
-            csched_balance_cpumask(vc, balance_step, cpumask_scratch_cpu(cpu));
-            if ( __csched_vcpu_is_migrateable(vc, cpu,
-                                              cpumask_scratch_cpu(cpu)) )
+            csched_balance_cpumask(vc, balance_step, cpumask_scratch);
+            if ( __csched_vcpu_is_migrateable(vc, cpu, cpumask_scratch) )
             {
                 /* We got a candidate. Grab it! */
                 TRACE_3D(TRC_CSCHED_STOLEN_VCPU, peer_cpu,

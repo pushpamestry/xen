@@ -185,7 +185,7 @@ host cpus and memory. In that case, the soft affinity of all the vcpus
 of the domain will be set to the pcpus belonging to the NUMA nodes
 chosen during placement.
 
-For more details, see F<docs/misc/xl-numa-placement.markdown>.
+For more details, see L<xl-numa-placement(7)>.
 
 =back
 
@@ -480,19 +480,18 @@ devices which the guest will contain.
 
 Specifies the disks (both emulated disks and Xen virtual block
 devices) which are to be provided to the guest, and what objects on
-the host they should map to.  See F<docs/misc/xl-disk-configuration.txt>.
+the host they should map to.  See L<xl-disk-configuration(5)>.
 
 =item B<vif=[ "NET_SPEC_STRING", "NET_SPEC_STRING", ...]>
 
 Specifies the networking provision (both emulated network adapters,
 and Xen virtual interfaces) to provided to the guest.  See
-F<docs/misc/xl-network-configuration.markdown>.
+L<xl-network-configuration(5)>.
 
 =item B<vtpm=[ "VTPM_SPEC_STRING", "VTPM_SPEC_STRING", ...]>
 
 Specifies the virtual trusted platform module to be
-provided to the guest. Please see F<docs/misc/vtpm.txt>
-for more details.
+provided to the guest. Please see L<xen-vtpm(7)> for more details.
 
 Each B<VTPM_SPEC_STRING> is a comma-separated list of C<KEY=VALUE>
 settings, from the following list:
@@ -604,7 +603,7 @@ Specifies the virtual channels to be provided to the guest. A
 channel is a low-bandwidth, bidirectional byte stream, which resembles
 a serial link. Typical uses for channels include transmitting VM
 configuration after boot and signalling to in-guest agents. Please see
-F<docs/misc/channels.txt> for more details.
+L<xen-pv-channel(7)> for more details.
 
 Each B<CHANNEL_SPEC_STRING> is a comma-separated list of C<KEY=VALUE>
 settings. Leading and trailing whitespace is ignored in both KEY and
@@ -1464,7 +1463,7 @@ determined in the similar way to that of B<default> TSC mode.
 
 =back
 
-Please see F<docs/misc/tscmode.txt> for more information on this option.
+Please see L<xen-tscmode(7)> for more information on this option.
 
 =item B<localtime=BOOLEAN>
 
@@ -1895,7 +1894,7 @@ specified, enabling the use of XenServer PV drivers in the guest.
 =back
 
 This parameter only takes effect when device_model_version=qemu-xen.
-See F<docs/misc/pci-device-reservations.txt> for more information.
+See L<xen-pci-device-reservations(7)> for more information.
 
 =back
 
@@ -2030,11 +2029,11 @@ natively or via hardware backwards compatibility support.
 
 =item L<xlcpupool.cfg(5)>
 
-=item F<xl-disk-configuration>
+=item L<xl-disk-configuration(5)>
 
-=item F<xl-network-configuration>
+=item L<xl-network-configuration(5)>
 
-=item F<docs/misc/tscmode.txt>
+=item L<xen-tscmode(7)>
 
 =back
 

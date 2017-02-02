@@ -48,20 +48,6 @@ struct map_range_data
     p2m_type_t p2mt;
 };
 
-static const struct dt_device_match dev_map_attrs[] __initconst =
-{
-    {
-        __DT_MATCH_COMPATIBLE("mmio-sram"),
-        __DT_MATCH_PROP("no-memory-wc"),
-        .data = (void *) (uintptr_t) p2m_mmio_direct_dev,
-    },
-    {
-        __DT_MATCH_COMPATIBLE("mmio-sram"),
-        .data = (void *) (uintptr_t) p2m_mmio_direct_nc,
-    },
-    { /* sentinel */ },
-};
-
 //#define DEBUG_11_ALLOCATION
 #ifdef DEBUG_11_ALLOCATION
 # define D11PRINT(fmt, args...) printk(XENLOG_DEBUG fmt, ##args)
@@ -1170,21 +1156,6 @@ static int handle_device(struct domain *d, struct dt_device_node *dev,
     return 0;
 }
 
-static p2m_type_t lookup_map_attr(struct dt_device_node *node,
-                                  p2m_type_t parent_p2mt)
-{
-    const struct dt_device_match *r;
-
-    /* Search and if nothing matches, use the parent's attributes.  */
-    r = dt_match_node(dev_map_attrs, node);
-
-    /*
-     * If this node does not dictate specific mapping attributes,
-     * it inherits its parent's attributes.
-     */
-    return r ? (uintptr_t) r->data : parent_p2mt;
-}
-
 static int handle_node(struct domain *d, struct kernel_info *kinfo,
                        struct dt_device_node *node,
                        p2m_type_t p2mt)
@@ -1275,7 +1246,6 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
                "WARNING: Path %s is reserved, skip the node as we may re-use the path.\n",
                path);
 
-    p2mt = lookup_map_attr(node, p2mt);
     res = handle_device(d, node, p2mt);
     if ( res)
         return res;
@@ -1330,7 +1300,7 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
 
 static int prepare_dtb(struct domain *d, struct kernel_info *kinfo)
 {
-    const p2m_type_t default_p2mt = p2m_mmio_direct_dev;
+    const p2m_type_t default_p2mt = p2m_mmio_direct_c;
     const void *fdt;
     int new_size;
     int ret;
@@ -1373,7 +1343,7 @@ static int acpi_iomem_deny_access(struct domain *d)
 {
     acpi_status status;
     struct acpi_table_spcr *spcr = NULL;
-    unsigned long gfn;
+    unsigned long mfn;
     int rc;
 
     /* Firstly permit full MMIO capabilities. */
@@ -1391,9 +1361,9 @@ static int acpi_iomem_deny_access(struct domain *d)
         return -EINVAL;
     }
 
-    gfn = spcr->serial_port.address >> PAGE_SHIFT;
+    mfn = spcr->serial_port.address >> PAGE_SHIFT;
     /* Deny MMIO access for UART */
-    rc = iomem_deny_access(d, gfn, gfn + 1);
+    rc = iomem_deny_access(d, mfn, mfn + 1);
     if ( rc )
         return rc;
 

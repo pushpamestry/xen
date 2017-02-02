@@ -77,7 +77,6 @@ static bool verbose = false;
 LIST_HEAD(connections);
 static int tracefd = -1;
 static bool recovery = true;
-static bool remove_local = true;
 static int reopen_log_pipe[2];
 static int reopen_log_pipe0_pollfd_idx = -1;
 static char *tracefile = NULL;
@@ -1157,17 +1156,6 @@ static int _rm(struct connection *conn, const void *ctx, struct node *node,
 }
 
 
-static void internal_rm(const char *name)
-{
-	char *tname = talloc_strdup(NULL, name);
-	struct node *node = read_node(NULL, tname, tname);
-	if (node)
-		_rm(NULL, tname, node, tname);
-	talloc_free(node);
-	talloc_free(tname);
-}
-
-
 static int do_rm(struct connection *conn, struct buffered_data *in)
 {
 	struct node *node;
@@ -1582,49 +1570,18 @@ static void setup_structure(void)
 		barf_perror("Could not create tdbname");
 
 	if (!(tdb_flags & TDB_INTERNAL))
-		tdb_ctx = tdb_open_ex(tdbname, 0, tdb_flags, O_RDWR, 0,
-				      &tdb_logger, NULL);
+		unlink(tdbname);
 
-	if (tdb_ctx) {
-		/* XXX When we make xenstored able to restart, this will have
-		   to become cleverer, checking for existing domains and not
-		   removing the corresponding entries, but for now xenstored
-		   cannot be restarted without losing all the registered
-		   watches, which breaks all the backend drivers anyway.  We
-		   can therefore get away with just clearing /local and
-		   expecting Xend to put the appropriate entries back in.
+	tdb_ctx = tdb_open_ex(tdbname, 7919, tdb_flags, O_RDWR|O_CREAT|O_EXCL,
+			      0640, &tdb_logger, NULL);
+	if (!tdb_ctx)
+		barf_perror("Could not create tdb file %s", tdbname);
 
-		   When this change is made it is important to note that
-		   dom0's entries must be cleaned up on reboot _before_ this
-		   daemon starts, otherwise the backend drivers and dom0's
-		   balloon driver will pick up stale entries.  In the case of
-		   the balloon driver, this can be fatal.
-		*/
-		char *tlocal = talloc_strdup(NULL, "/local");
+	manual_node("/", "tool");
+	manual_node("/tool", "xenstored");
+	manual_node("/tool/xenstored", NULL);
 
-		check_store();
-
-		if (remove_local) {
-			internal_rm("/local");
-			create_node(NULL, NULL, tlocal, NULL, 0);
-
-			check_store();
-		}
-
-		talloc_free(tlocal);
-	}
-	else {
-		tdb_ctx = tdb_open_ex(tdbname, 7919, tdb_flags, O_RDWR|O_CREAT,
-				      0640, &tdb_logger, NULL);
-		if (!tdb_ctx)
-			barf_perror("Could not create tdb file %s", tdbname);
-
-		manual_node("/", "tool");
-		manual_node("/tool", "xenstored");
-		manual_node("/tool/xenstored", NULL);
-
-		check_store();
-	}
+	check_store();
 }
 
 
@@ -1946,7 +1903,6 @@ static void usage(void)
 "  -R, --no-recovery       to request that no recovery should be attempted when\n"
 "                          the store is corrupted (debug only),\n"
 "  -I, --internal-db       store database in memory, not on disk\n"
-"  -L, --preserve-local    to request that /local is preserved on start-up,\n"
 "  -M, --memory-debug <file>  support memory debugging to file,\n"
 "  -V, --verbose           to request verbose execution.\n");
 }
@@ -1966,7 +1922,6 @@ static struct option options[] = {
 	{ "trace-file", 1, NULL, 'T' },
 	{ "transaction", 1, NULL, 't' },
 	{ "no-recovery", 0, NULL, 'R' },
-	{ "preserve-local", 0, NULL, 'L' },
 	{ "internal-db", 0, NULL, 'I' },
 	{ "verbose", 0, NULL, 'V' },
 	{ "watch-nb", 1, NULL, 'W' },
@@ -1990,7 +1945,7 @@ int main(int argc, char *argv[])
 	int timeout;
 
 
-	while ((opt = getopt_long(argc, argv, "DE:F:HNPS:t:T:RLVW:M:", options,
+	while ((opt = getopt_long(argc, argv, "DE:F:HNPS:t:T:RVW:M:", options,
 				  NULL)) != -1) {
 		switch (opt) {
 		case 'D':
@@ -2013,9 +1968,6 @@ int main(int argc, char *argv[])
 			break;
 		case 'R':
 			recovery = false;
-			break;
-		case 'L':
-			remove_local = false;
 			break;
 		case 'S':
 			quota_max_entry_size = strtol(optarg, NULL, 10);

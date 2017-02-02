@@ -2251,7 +2251,7 @@ static int alloc_page_type(struct page_info *page, unsigned long type,
 
     /* A page table is dirtied when its type count becomes non-zero. */
     if ( likely(owner != NULL) )
-        paging_mark_dirty(owner, page_to_mfn(page));
+        paging_mark_dirty(owner, _mfn(page_to_mfn(page)));
 
     switch ( type & PGT_type_mask )
     {
@@ -2325,7 +2325,7 @@ int free_page_type(struct page_info *page, unsigned long type,
     if ( likely(owner != NULL) && unlikely(paging_mode_enabled(owner)) )
     {
         /* A page table is dirtied when its type count becomes zero. */
-        paging_mark_dirty(owner, page_to_mfn(page));
+        paging_mark_dirty(owner, _mfn(page_to_mfn(page)));
 
         if ( shadow_mode_refcounts(owner) )
             return 0;
@@ -2477,6 +2477,7 @@ static int __get_page_type(struct page_info *page, unsigned long type,
     int rc = 0, iommu_ret = 0;
 
     ASSERT(!(type & ~(PGT_type_mask | PGT_pae_xen_l2)));
+    ASSERT(!in_irq());
 
     for ( ; ; )
     {
@@ -2509,20 +2510,21 @@ static int __get_page_type(struct page_info *page, unsigned long type,
                  * may be unnecessary (e.g., page was GDT/LDT) but those 
                  * circumstances should be very rare.
                  */
-                cpumask_t mask;
+                cpumask_t *mask = this_cpu(scratch_cpumask);
 
-                cpumask_copy(&mask, d->domain_dirty_cpumask);
+                BUG_ON(in_irq());
+                cpumask_copy(mask, d->domain_dirty_cpumask);
 
                 /* Don't flush if the timestamp is old enough */
-                tlbflush_filter(&mask, page->tlbflush_timestamp);
+                tlbflush_filter(mask, page->tlbflush_timestamp);
 
-                if ( unlikely(!cpumask_empty(&mask)) &&
+                if ( unlikely(!cpumask_empty(mask)) &&
                      /* Shadow mode: track only writable pages. */
                      (!shadow_mode_enabled(page_get_owner(page)) ||
                       ((nx & PGT_type_mask) == PGT_writable_page)) )
                 {
                     perfc_incr(need_flush_tlb_flush);
-                    flush_tlb_mask(&mask);
+                    flush_tlb_mask(mask);
                 }
 
                 /* We lose existing type and validity. */
@@ -3247,7 +3249,7 @@ long do_mmuext_op(
                 goto pin_drop;
 
             /* A page is dirtied when its pin status is set. */
-            paging_mark_dirty(pg_owner, page_to_mfn(page));
+            paging_mark_dirty(pg_owner, _mfn(page_to_mfn(page)));
 
             /* We can race domain destruction (domain_relinquish_resources). */
             if ( unlikely(pg_owner != d) )
@@ -3307,7 +3309,7 @@ long do_mmuext_op(
             put_page(page);
 
             /* A page is dirtied when its pin status is cleared. */
-            paging_mark_dirty(pg_owner, page_to_mfn(page));
+            paging_mark_dirty(pg_owner, _mfn(page_to_mfn(page)));
 
             break;
         }
@@ -3403,22 +3405,22 @@ long do_mmuext_op(
         case MMUEXT_TLB_FLUSH_MULTI:
         case MMUEXT_INVLPG_MULTI:
         {
-            cpumask_t pmask;
+            cpumask_t *mask = this_cpu(scratch_cpumask);
 
             if ( unlikely(d != pg_owner) )
                 rc = -EPERM;
             else if ( unlikely(vcpumask_to_pcpumask(d,
                                    guest_handle_to_param(op.arg2.vcpumask,
                                                          const_void),
-                                   &pmask)) )
+                                   mask)) )
                 rc = -EINVAL;
             if ( unlikely(rc) )
                 break;
 
             if ( op.cmd == MMUEXT_TLB_FLUSH_MULTI )
-                flush_tlb_mask(&pmask);
+                flush_tlb_mask(mask);
             else if ( __addr_ok(op.arg1.linear_addr) )
-                flush_tlb_one_mask(&pmask, op.arg1.linear_addr);
+                flush_tlb_one_mask(mask, op.arg1.linear_addr);
             break;
         }
 
@@ -3456,14 +3458,14 @@ long do_mmuext_op(
             else if ( likely(cache_flush_permitted(d)) )
             {
                 unsigned int cpu;
-                cpumask_t mask;
+                cpumask_t *mask = this_cpu(scratch_cpumask);
 
-                cpumask_clear(&mask);
+                cpumask_clear(mask);
                 for_each_online_cpu(cpu)
-                    if ( !cpumask_intersects(&mask,
+                    if ( !cpumask_intersects(mask,
                                              per_cpu(cpu_sibling_mask, cpu)) )
-                        __cpumask_set_cpu(cpu, &mask);
-                flush_mask(&mask, FLUSH_CACHE);
+                        __cpumask_set_cpu(cpu, mask);
+                flush_mask(mask, FLUSH_CACHE);
             }
             else
             {
@@ -3516,7 +3518,7 @@ long do_mmuext_op(
             }
 
             /* A page is dirtied when it's being cleared. */
-            paging_mark_dirty(pg_owner, page_to_mfn(page));
+            paging_mark_dirty(pg_owner, _mfn(page_to_mfn(page)));
 
             clear_domain_page(_mfn(page_to_mfn(page)));
 
@@ -3551,7 +3553,7 @@ long do_mmuext_op(
             }
 
             /* A page is dirtied when it's being copied to. */
-            paging_mark_dirty(pg_owner, page_to_mfn(dst_page));
+            paging_mark_dirty(pg_owner, _mfn(page_to_mfn(dst_page)));
 
             copy_domain_page(_mfn(page_to_mfn(dst_page)),
                              _mfn(page_to_mfn(src_page)));
@@ -3894,7 +3896,7 @@ long do_mmu_update(
 
             set_gpfn_from_mfn(mfn, gpfn);
 
-            paging_mark_dirty(pg_owner, mfn);
+            paging_mark_dirty(pg_owner, _mfn(mfn));
 
             put_page(mfn_to_page(mfn));
             break;
@@ -4458,7 +4460,7 @@ static int __do_update_va_mapping(
     struct page_info *gl1pg;
     l1_pgentry_t  *pl1e;
     unsigned long  bmap_ptr, gl1mfn;
-    cpumask_t      pmask;
+    cpumask_t     *mask = NULL;
     int            rc;
 
     perfc_incr(calls_to_update_va);
@@ -4504,15 +4506,17 @@ static int __do_update_va_mapping(
             flush_tlb_local();
             break;
         case UVMF_ALL:
-            flush_tlb_mask(d->domain_dirty_cpumask);
+            mask = d->domain_dirty_cpumask;
             break;
         default:
+            mask = this_cpu(scratch_cpumask);
             rc = vcpumask_to_pcpumask(d, const_guest_handle_from_ptr(bmap_ptr,
                                                                      void),
-                                      &pmask);
-            flush_tlb_mask(&pmask);
+                                      mask);
             break;
         }
+        if ( mask )
+            flush_tlb_mask(mask);
         break;
 
     case UVMF_INVLPG:
@@ -4522,15 +4526,17 @@ static int __do_update_va_mapping(
             paging_invlpg(v, va);
             break;
         case UVMF_ALL:
-            flush_tlb_one_mask(d->domain_dirty_cpumask, va);
+            mask = d->domain_dirty_cpumask;
             break;
         default:
+            mask = this_cpu(scratch_cpumask);
             rc = vcpumask_to_pcpumask(d, const_guest_handle_from_ptr(bmap_ptr,
                                                                      void),
-                                      &pmask);
-            flush_tlb_one_mask(&pmask, va);
+                                      mask);
             break;
         }
+        if ( mask )
+            flush_tlb_one_mask(mask, va);
         break;
     }
 
@@ -4700,7 +4706,7 @@ long do_update_descriptor(u64 pa, u64 desc)
         break;
     }
 
-    paging_mark_dirty(dom, mfn);
+    paging_mark_dirty(dom, _mfn(mfn));
 
     /* All is good so make the update. */
     gdt_pent = map_domain_page(_mfn(mfn));
@@ -5334,11 +5340,19 @@ static int ptwr_emulated_cmpxchg(
         container_of(ctxt, struct ptwr_emulate_ctxt, ctxt));
 }
 
+static int pv_emul_is_mem_write(const struct x86_emulate_state *state,
+                                struct x86_emulate_ctxt *ctxt)
+{
+    return x86_insn_is_mem_write(state, ctxt) ? X86EMUL_OKAY
+                                              : X86EMUL_UNHANDLEABLE;
+}
+
 static const struct x86_emulate_ops ptwr_emulate_ops = {
     .read       = ptwr_emulated_read,
     .insn_fetch = ptwr_emulated_read,
     .write      = ptwr_emulated_write,
     .cmpxchg    = ptwr_emulated_cmpxchg,
+    .validate   = pv_emul_is_mem_write,
     .cpuid      = pv_emul_cpuid,
 };
 
@@ -5352,6 +5366,7 @@ int ptwr_do_page_fault(struct vcpu *v, unsigned long addr,
     struct ptwr_emulate_ctxt ptwr_ctxt = {
         .ctxt = {
             .regs = regs,
+            .vendor = d->arch.cpuid->x86_vendor,
             .addr_size = is_pv_32bit_domain(d) ? 32 : BITS_PER_LONG,
             .sp_size   = is_pv_32bit_domain(d) ? 32 : BITS_PER_LONG,
             .swint_emulate = x86_swint_emulate_none,
@@ -5456,6 +5471,7 @@ static const struct x86_emulate_ops mmio_ro_emulate_ops = {
     .read       = x86emul_unhandleable_rw,
     .insn_fetch = ptwr_emulated_read,
     .write      = mmio_ro_emulated_write,
+    .validate   = pv_emul_is_mem_write,
     .cpuid      = pv_emul_cpuid,
 };
 
@@ -5494,6 +5510,7 @@ static const struct x86_emulate_ops mmcfg_intercept_ops = {
     .read       = x86emul_unhandleable_rw,
     .insn_fetch = ptwr_emulated_read,
     .write      = mmcfg_intercept_write,
+    .validate   = pv_emul_is_mem_write,
     .cpuid      = pv_emul_cpuid,
 };
 
@@ -5507,6 +5524,7 @@ int mmio_ro_do_page_fault(struct vcpu *v, unsigned long addr,
     struct mmio_ro_emulate_ctxt mmio_ro_ctxt = { .cr2 = addr };
     struct x86_emulate_ctxt ctxt = {
         .regs = regs,
+        .vendor = v->domain->arch.cpuid->x86_vendor,
         .addr_size = addr_size,
         .sp_size = addr_size,
         .swint_emulate = x86_swint_emulate_none,

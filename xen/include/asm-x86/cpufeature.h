@@ -3,29 +3,8 @@
  *
  * Defines x86 CPU feature bits
  */
-#if defined(XEN_CPUFEATURE)
-
-/* Other features, Xen-defined mapping. */
-/* This range is used for feature bits which conflict or are synthesized */
-XEN_CPUFEATURE(CONSTANT_TSC,    (FSCAPINTS+0)*32+ 0) /* TSC ticks at a constant rate */
-XEN_CPUFEATURE(NONSTOP_TSC,     (FSCAPINTS+0)*32+ 1) /* TSC does not stop in C states */
-XEN_CPUFEATURE(ARAT,            (FSCAPINTS+0)*32+ 2) /* Always running APIC timer */
-XEN_CPUFEATURE(ARCH_PERFMON,    (FSCAPINTS+0)*32+ 3) /* Intel Architectural PerfMon */
-XEN_CPUFEATURE(TSC_RELIABLE,    (FSCAPINTS+0)*32+ 4) /* TSC is known to be reliable */
-XEN_CPUFEATURE(XTOPOLOGY,       (FSCAPINTS+0)*32+ 5) /* cpu topology enum extensions */
-XEN_CPUFEATURE(CPUID_FAULTING,  (FSCAPINTS+0)*32+ 6) /* cpuid faulting */
-XEN_CPUFEATURE(CLFLUSH_MONITOR, (FSCAPINTS+0)*32+ 7) /* clflush reqd with monitor */
-XEN_CPUFEATURE(APERFMPERF,      (FSCAPINTS+0)*32+ 8) /* APERFMPERF */
-XEN_CPUFEATURE(MFENCE_RDTSC,    (FSCAPINTS+0)*32+ 9) /* MFENCE synchronizes RDTSC */
-XEN_CPUFEATURE(XEN_SMEP,        (FSCAPINTS+0)*32+ 10) /* SMEP gets used by Xen itself */
-XEN_CPUFEATURE(XEN_SMAP,        (FSCAPINTS+0)*32+ 11) /* SMAP gets used by Xen itself */
-
-#define NCAPINTS (FSCAPINTS + 1) /* N 32-bit words worth of info */
-
-#elif !defined(__ASM_I386_CPUFEATURE_H)
-#ifndef X86_FEATURES_ONLY
+#ifndef __ASM_I386_CPUFEATURE_H
 #define __ASM_I386_CPUFEATURE_H
-#endif
 
 #include <xen/const.h>
 #include <asm/cpuid.h>
@@ -37,7 +16,7 @@ XEN_CPUFEATURE(XEN_SMAP,        (FSCAPINTS+0)*32+ 11) /* SMAP gets used by Xen i
 /* An alias of a feature we know is always going to be present. */
 #define X86_FEATURE_ALWAYS      X86_FEATURE_LM
 
-#if !defined(__ASSEMBLY__) && !defined(X86_FEATURES_ONLY)
+#ifndef __ASSEMBLY__
 #include <xen/bitops.h>
 
 #define cpu_has(c, bit)		test_bit(bit, (c)->x86_capability)
@@ -59,10 +38,9 @@ XEN_CPUFEATURE(XEN_SMAP,        (FSCAPINTS+0)*32+ 11) /* SMAP gets used by Xen i
 #define cpu_has_sep		boot_cpu_has(X86_FEATURE_SEP)
 #define cpu_has_mtrr		1
 #define cpu_has_mmx		1
-#define cpu_has_sse		boot_cpu_has(X86_FEATURE_SSE)
-#define cpu_has_sse2		boot_cpu_has(X86_FEATURE_SSE2)
 #define cpu_has_sse3		boot_cpu_has(X86_FEATURE_SSE3)
 #define cpu_has_sse4_2		boot_cpu_has(X86_FEATURE_SSE4_2)
+#define cpu_has_popcnt		boot_cpu_has(X86_FEATURE_POPCNT)
 #define cpu_has_htt		boot_cpu_has(X86_FEATURE_HTT)
 #define cpu_has_nx		boot_cpu_has(X86_FEATURE_NX)
 #define cpu_has_clflush		boot_cpu_has(X86_FEATURE_CLFLUSH)
@@ -79,6 +57,8 @@ XEN_CPUFEATURE(XEN_SMAP,        (FSCAPINTS+0)*32+ 11) /* SMAP gets used by Xen i
 #define cpu_has_xsave           boot_cpu_has(X86_FEATURE_XSAVE)
 #define cpu_has_avx             boot_cpu_has(X86_FEATURE_AVX)
 #define cpu_has_lwp             boot_cpu_has(X86_FEATURE_LWP)
+#define cpu_has_bmi1            boot_cpu_has(X86_FEATURE_BMI1)
+#define cpu_has_bmi2            boot_cpu_has(X86_FEATURE_BMI2)
 #define cpu_has_mpx             boot_cpu_has(X86_FEATURE_MPX)
 #define cpu_has_arch_perfmon    boot_cpu_has(X86_FEATURE_ARCH_PERFMON)
 #define cpu_has_rdtscp          boot_cpu_has(X86_FEATURE_RDTSCP)
@@ -93,7 +73,11 @@ XEN_CPUFEATURE(XEN_SMAP,        (FSCAPINTS+0)*32+ 11) /* SMAP gets used by Xen i
 #define cpu_has_monitor		boot_cpu_has(X86_FEATURE_MONITOR)
 #define cpu_has_eist		boot_cpu_has(X86_FEATURE_EIST)
 #define cpu_has_hypervisor	boot_cpu_has(X86_FEATURE_HYPERVISOR)
+#define cpu_has_rdrand		boot_cpu_has(X86_FEATURE_RDRAND)
+#define cpu_has_rdseed		boot_cpu_has(X86_FEATURE_RDSEED)
 #define cpu_has_cmp_legacy	boot_cpu_has(X86_FEATURE_CMP_LEGACY)
+#define cpu_has_tbm		boot_cpu_has(X86_FEATURE_TBM)
+#define cpu_has_itsc		boot_cpu_has(X86_FEATURE_ITSC)
 
 enum _cache_type {
     CACHE_TYPE_NULL = 0,
@@ -139,9 +123,7 @@ struct cpuid4_info {
 };
 
 int cpuid4_cache_lookup(int index, struct cpuid4_info *this_leaf);
-#endif
-
-#undef X86_FEATURES_ONLY
+#endif /* !__ASSEMBLY__ */
 
 #endif /* __ASM_I386_CPUFEATURE_H */
 

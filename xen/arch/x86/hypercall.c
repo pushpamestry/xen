@@ -66,6 +66,7 @@ const hypercall_args_t hypercall_args_table[NR_hypercalls] =
     ARGS(kexec_op, 2),
     ARGS(tmem_op, 1),
     ARGS(xenpmu_op, 2),
+    ARGS(dm_op, 3),
     ARGS(mca, 1),
     ARGS(arch_1, 1),
 };
@@ -128,6 +129,7 @@ static const hypercall_table_t pv_hypercall_table[] = {
     HYPERCALL(tmem_op),
 #endif
     HYPERCALL(xenpmu_op),
+    COMPAT_CALL(dm_op),
     HYPERCALL(mca),
     HYPERCALL(arch_1),
 };
@@ -146,7 +148,7 @@ void pv_hypercall(struct cpu_user_regs *regs)
 
     ASSERT(guest_kernel_mode(curr, regs));
 
-    eax = is_pv_32bit_vcpu(curr) ? regs->_eax : regs->eax;
+    eax = is_pv_32bit_vcpu(curr) ? regs->_eax : regs->rax;
 
     BUILD_BUG_ON(ARRAY_SIZE(pv_hypercall_table) >
                  ARRAY_SIZE(hypercall_args_table));
@@ -154,7 +156,7 @@ void pv_hypercall(struct cpu_user_regs *regs)
     if ( (eax >= ARRAY_SIZE(pv_hypercall_table)) ||
          !pv_hypercall_table[eax].native )
     {
-        regs->eax = -ENOSYS;
+        regs->rax = -ENOSYS;
         return;
     }
 
@@ -186,7 +188,7 @@ void pv_hypercall(struct cpu_user_regs *regs)
             __trace_hypercall(TRC_PV_HYPERCALL_V2, eax, args);
         }
 
-        regs->eax = pv_hypercall_table[eax].native(rdi, rsi, rdx, r10, r8, r9);
+        regs->rax = pv_hypercall_table[eax].native(rdi, rsi, rdx, r10, r8, r9);
 
 #ifndef NDEBUG
         if ( regs->rip == old_rip )

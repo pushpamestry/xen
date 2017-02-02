@@ -41,6 +41,7 @@
 #include <xen/sched.h>
 #include <xen/memory.h>
 #include <xen/grant_table.h>
+#include <xen/hvm/dm_op.h>
 #include <xen/hvm/params.h>
 #include <xen/xsm/flask_op.h>
 #include <xen/tmem.h>
@@ -1593,7 +1594,7 @@ int xc_physdev_unmap_pirq(xc_interface *xch,
 
 int xc_hvm_set_pci_intx_level(
     xc_interface *xch, domid_t dom,
-    uint8_t domain, uint8_t bus, uint8_t device, uint8_t intx,
+    uint16_t domain, uint8_t bus, uint8_t device, uint8_t intx,
     unsigned int level);
 int xc_hvm_set_isa_irq_level(
     xc_interface *xch, domid_t dom,
@@ -1619,29 +1620,29 @@ int xc_hvm_inject_msi(
  */
 int xc_hvm_track_dirty_vram(
     xc_interface *xch, domid_t dom,
-    uint64_t first_pfn, uint64_t nr,
+    uint64_t first_pfn, uint32_t nr,
     unsigned long *bitmap);
 
 /*
  * Notify that some pages got modified by the Device Model
  */
 int xc_hvm_modified_memory(
-    xc_interface *xch, domid_t dom, uint64_t first_pfn, uint64_t nr);
+    xc_interface *xch, domid_t dom, uint64_t first_pfn, uint32_t nr);
 
 /*
  * Set a range of memory to a specific type.
  * Allowed types are HVMMEM_ram_rw, HVMMEM_ram_ro, HVMMEM_mmio_dm
  */
 int xc_hvm_set_mem_type(
-    xc_interface *xch, domid_t dom, hvmmem_type_t memtype, uint64_t first_pfn, uint64_t nr);
+    xc_interface *xch, domid_t dom, hvmmem_type_t memtype, uint64_t first_pfn, uint32_t nr);
 
 /*
  * Injects a hardware/software CPU trap, to take effect the next time the HVM 
  * resumes. 
  */
 int xc_hvm_inject_trap(
-    xc_interface *xch, domid_t dom, int vcpu, uint32_t vector,
-    uint32_t type, uint32_t error_code, uint32_t insn_len,
+    xc_interface *xch, domid_t dom, int vcpu, uint8_t vector,
+    uint8_t type, uint32_t error_code, uint8_t insn_len,
     uint64_t cr2);
 
 /*
@@ -2574,6 +2575,16 @@ int xc_kexec_load(xc_interface *xch, uint8_t type, uint16_t arch,
  */
 int xc_kexec_unload(xc_interface *xch, int type);
 
+/*
+ * Find out whether the image has been succesfully loaded.
+ *
+ * The type can be either KEXEC_TYPE_DEFAULT or KEXEC_TYPE_CRASH.
+ * If zero is returned, that means no image is loaded for the type.
+ * If one is returned, that means an image is loaded for the type.
+ * Otherwise, negative return value indicates error.
+ */
+int xc_kexec_status(xc_interface *xch, int type);
+
 typedef xenpf_resource_entry_t xc_resource_entry_t;
 
 /*
@@ -2703,12 +2714,20 @@ int xc_livepatch_list(xc_interface *xch, unsigned int max, unsigned int start,
  * The operations are asynchronous and the hypervisor may take a while
  * to complete them. The `timeout` offers an option to expire the
  * operation if it could not be completed within the specified time
- * (in ms). Value of 0 means let hypervisor decide the best timeout.
+ * (in ns). Value of 0 means let hypervisor decide the best timeout.
  */
 int xc_livepatch_apply(xc_interface *xch, char *name, uint32_t timeout);
 int xc_livepatch_revert(xc_interface *xch, char *name, uint32_t timeout);
 int xc_livepatch_unload(xc_interface *xch, char *name, uint32_t timeout);
 int xc_livepatch_replace(xc_interface *xch, char *name, uint32_t timeout);
+
+/*
+ * Ensure cache coherency after memory modifications. A call to this function
+ * is only required on ARM as the x86 architecture provides cache coherency
+ * guarantees. Calling this function on x86 is allowed but has no effect.
+ */
+int xc_domain_cacheflush(xc_interface *xch, uint32_t domid,
+                         xen_pfn_t start_pfn, xen_pfn_t nr_pfns);
 
 /* Compat shims */
 #include "xenctrl_compat.h"

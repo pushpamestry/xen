@@ -146,6 +146,14 @@ struct __attribute__((__packed__)) segment_register {
 #define X86EMUL_EXCEPTION      2
  /* Retry the emulation for some reason. No state modified. */
 #define X86EMUL_RETRY          3
+ /*
+  * Operation fully done by one of the hooks:
+  * - validate(): operation completed (except common insn retire logic)
+  * - read_segment(x86_seg_tr, ...): bypass I/O bitmap access
+  * - read_io() / write_io(): bypass GPR update (non-string insns only)
+  * Undefined behavior when used anywhere else.
+  */
+#define X86EMUL_DONE           4
 
 /* FPU sub-types which may be requested via ->get_fpu(). */
 enum x86_emulate_fpu_type {
@@ -155,6 +163,13 @@ enum x86_emulate_fpu_type {
     X86EMUL_FPU_xmm, /* SSE instruction set (%xmm0-%xmm7/15) */
     X86EMUL_FPU_ymm  /* AVX/XOP instruction set (%ymm0-%ymm7/15) */
 };
+
+struct cpuid_leaf
+{
+    uint32_t a, b, c, d;
+};
+
+struct x86_emulate_state;
 
 /*
  * These operations represent the instruction emulator's interface to memory,
@@ -235,6 +250,14 @@ struct x86_emulate_ops
         void *p_old,
         void *p_new,
         unsigned int bytes,
+        struct x86_emulate_ctxt *ctxt);
+
+    /*
+     * validate: Post-decode, pre-emulate hook to allow caller controlled
+     * filtering.
+     */
+    int (*validate)(
+        const struct x86_emulate_state *state,
         struct x86_emulate_ctxt *ctxt);
 
     /*
@@ -397,10 +420,9 @@ struct x86_emulate_ops
      * #GP[0].  Used to implement CPUID faulting.
      */
     int (*cpuid)(
-        unsigned int *eax,
-        unsigned int *ebx,
-        unsigned int *ecx,
-        unsigned int *edx,
+        uint32_t leaf,
+        uint32_t subleaf,
+        struct cpuid_leaf *res,
         struct x86_emulate_ctxt *ctxt);
 
     /*
@@ -443,6 +465,9 @@ struct x86_emulate_ctxt
 
     /* Software event injection support. */
     enum x86_swint_emulation swint_emulate;
+
+    /* CPU vendor (X86_VENDOR_UNKNOWN for "don't care") */
+    unsigned char vendor;
 
     /* Set this if writes may have side effects. */
     bool force_writeback;
@@ -539,6 +564,11 @@ struct x86_emulate_ctxt
 # define X86EMUL_OPC_EVEX_F2(ext, byte) \
     (X86EMUL_OPC_F2(ext, byte) | X86EMUL_OPC_EVEX_)
 
+#define X86EMUL_OPC_XOP(ext, byte)    X86EMUL_OPC(0x8f##ext, byte)
+#define X86EMUL_OPC_XOP_66(ext, byte) X86EMUL_OPC_66(0x8f##ext, byte)
+#define X86EMUL_OPC_XOP_F3(ext, byte) X86EMUL_OPC_F3(0x8f##ext, byte)
+#define X86EMUL_OPC_XOP_F2(ext, byte) X86EMUL_OPC_F2(0x8f##ext, byte)
+
 struct x86_emulate_stub {
     union {
         void (*func)(void);
@@ -566,37 +596,9 @@ x86_emulate(
  * In debug builds, wrap x86_emulate() with some assertions about its expected
  * behaviour.
  */
-static inline int x86_emulate_wrapper(
+int x86_emulate_wrapper(
     struct x86_emulate_ctxt *ctxt,
-    const struct x86_emulate_ops *ops)
-{
-    unsigned long orig_eip = ctxt->regs->eip;
-    int rc = x86_emulate(ctxt, ops);
-
-    /* Retire flags should only be set for successful instruction emulation. */
-    if ( rc != X86EMUL_OKAY )
-        ASSERT(ctxt->retire.raw == 0);
-
-    /* All cases returning X86EMUL_EXCEPTION should have fault semantics. */
-    if ( rc == X86EMUL_EXCEPTION )
-        ASSERT(ctxt->regs->eip == orig_eip);
-
-    /*
-     * TODO: Make this true:
-     *
-    ASSERT(ctxt->event_pending == (rc == X86EMUL_EXCEPTION));
-     *
-     * Some codepaths still raise exceptions behind the back of the
-     * emulator. (i.e. return X86EMUL_EXCEPTION but without
-     * event_pending being set).  In the meantime, use a slightly
-     * relaxed check...
-     */
-    if ( ctxt->event_pending )
-        ASSERT(rc == X86EMUL_EXCEPTION);
-
-    return rc;
-}
-
+    const struct x86_emulate_ops *ops);
 #define x86_emulate x86_emulate_wrapper
 #endif
 
@@ -628,12 +630,32 @@ x86_decode_insn(
         void *p_data, unsigned int bytes,
         struct x86_emulate_ctxt *ctxt));
 
+unsigned int
+x86_insn_opsize(const struct x86_emulate_state *state);
 int
 x86_insn_modrm(const struct x86_emulate_state *state,
                unsigned int *rm, unsigned int *reg);
+unsigned long
+x86_insn_operand_ea(const struct x86_emulate_state *state,
+                    enum x86_segment *seg);
+unsigned long
+x86_insn_immediate(const struct x86_emulate_state *state,
+                   unsigned int nr);
 unsigned int
 x86_insn_length(const struct x86_emulate_state *state,
                 const struct x86_emulate_ctxt *ctxt);
+bool
+x86_insn_is_mem_access(const struct x86_emulate_state *state,
+                       const struct x86_emulate_ctxt *ctxt);
+bool
+x86_insn_is_mem_write(const struct x86_emulate_state *state,
+                      const struct x86_emulate_ctxt *ctxt);
+bool
+x86_insn_is_portio(const struct x86_emulate_state *state,
+                   const struct x86_emulate_ctxt *ctxt);
+bool
+x86_insn_is_cr_access(const struct x86_emulate_state *state,
+                      const struct x86_emulate_ctxt *ctxt);
 
 #ifdef NDEBUG
 static inline void x86_emulate_free_state(struct x86_emulate_state *state) {}

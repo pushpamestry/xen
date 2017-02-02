@@ -1,10 +1,6 @@
 #ifndef __X86_CPUID_H__
 #define __X86_CPUID_H__
 
-#include <asm/cpuid-autogen.h>
-
-#define FSCAPINTS FEATURESET_NR_ENTRIES
-
 #include <asm/cpufeatureset.h>
 #include <asm/percpu.h>
 
@@ -21,17 +17,14 @@
 
 #ifndef __ASSEMBLY__
 #include <xen/types.h>
+#include <xen/kernel.h>
+#include <asm/x86_emulate.h>
 #include <public/sysctl.h>
 
 extern const uint32_t known_features[FSCAPINTS];
 extern const uint32_t special_features[FSCAPINTS];
 
-extern uint32_t raw_featureset[FSCAPINTS];
-#define host_featureset boot_cpu_data.x86_capability
-extern uint32_t pv_featureset[FSCAPINTS];
-extern uint32_t hvm_featureset[FSCAPINTS];
-
-void calculate_featuresets(void);
+void init_guest_cpuid(void);
 
 const uint32_t *lookup_deep_deps(uint32_t feature);
 
@@ -67,6 +60,211 @@ extern struct cpuidmasks cpuidmask_defaults;
 
 /* Whether or not cpuid faulting is available for the current domain. */
 DECLARE_PER_CPU(bool, cpuid_faulting_enabled);
+
+#define CPUID_GUEST_NR_BASIC      (0xdu + 1)
+#define CPUID_GUEST_NR_FEAT       (0u + 1)
+#define CPUID_GUEST_NR_XSTATE     (62u + 1)
+#define CPUID_GUEST_NR_EXTD_INTEL (0x8u + 1)
+#define CPUID_GUEST_NR_EXTD_AMD   (0x1cu + 1)
+#define CPUID_GUEST_NR_EXTD       MAX(CPUID_GUEST_NR_EXTD_INTEL, \
+                                      CPUID_GUEST_NR_EXTD_AMD)
+
+struct cpuid_policy
+{
+    /*
+     * WARNING: During the CPUID transition period, not all information here
+     * is accurate.  The following items are accurate, and can be relied upon.
+     *
+     * Global *_policy objects:
+     *
+     * - Guest accurate:
+     *   - All of the feat, xstate and extd unions
+     *   - max_{,sub}leaf
+     *   - All FEATURESET_* words
+     *   - Short vendor infomation
+     *
+     * Per-domain objects:
+     *
+     * - Guest accurate:
+     *   - All of the feat, xstate and extd unions
+     *   - max_{,sub}leaf
+     *   - All FEATURESET_* words
+     *   - Short vendor infomation
+     *
+     * Everything else should be considered inaccurate, and not necesserily 0.
+     */
+
+#define DECL_BITFIELD(word) _DECL_BITFIELD(FEATURESET_ ## word)
+#define _DECL_BITFIELD(x)   __DECL_BITFIELD(x)
+#define __DECL_BITFIELD(x)  CPUID_BITFIELD_ ## x
+
+    /* Basic leaves: 0x000000xx */
+    union {
+        struct cpuid_leaf raw[CPUID_GUEST_NR_BASIC];
+        struct {
+            /* Leaf 0x0 - Max and vendor. */
+            uint32_t max_leaf, vendor_ebx, vendor_ecx, vendor_edx;
+
+            /* Leaf 0x1 - Family/model/stepping and features. */
+            uint32_t raw_fms, /* b */:32;
+            union {
+                uint32_t _1c;
+                struct { DECL_BITFIELD(1c); };
+            };
+            union {
+                uint32_t _1d;
+                struct { DECL_BITFIELD(1d); };
+            };
+
+            /* Leaf 0x2 - TLB/Cache/Prefetch. */
+            uint8_t l2_nr_queries; /* Documented as fixed to 1. */
+        };
+    } basic;
+
+    /* Structured feature leaf: 0x00000007[xx] */
+    union {
+        struct cpuid_leaf raw[CPUID_GUEST_NR_FEAT];
+        struct {
+            /* Subleaf 0. */
+            uint32_t max_subleaf;
+            union {
+                uint32_t _7b0;
+                struct { DECL_BITFIELD(7b0); };
+            };
+            union {
+                uint32_t _7c0;
+                struct { DECL_BITFIELD(7c0); };
+            };
+            union {
+                uint32_t _7d0;
+                struct { DECL_BITFIELD(7d0); };
+            };
+        };
+    } feat;
+
+    /* Xstate feature leaf: 0x0000000D[xx] */
+    union {
+        struct cpuid_leaf raw[CPUID_GUEST_NR_XSTATE];
+
+        struct {
+            /* Subleaf 0. */
+            uint32_t xcr0_low, /* b */:32, max_size, xcr0_high;
+
+            /* Subleaf 1. */
+            union {
+                uint32_t Da1;
+                struct { DECL_BITFIELD(Da1); };
+            };
+            uint32_t /* b */:32, xss_low, xss_high;
+        };
+
+        /* Per-component common state.  Valid for i >= 2. */
+        struct {
+            uint32_t size, offset;
+            bool xss:1, align:1;
+            uint32_t _res_d;
+        } comp[CPUID_GUEST_NR_XSTATE];
+    } xstate;
+
+    /* Extended leaves: 0x800000xx */
+    union {
+        struct cpuid_leaf raw[CPUID_GUEST_NR_EXTD];
+        struct {
+            /* Leaf 0x80000000 - Max and vendor. */
+            uint32_t max_leaf, vendor_ebx, vendor_ecx, vendor_edx;
+
+            /* Leaf 0x80000001 - Family/model/stepping and features. */
+            uint32_t raw_fms, /* b */:32;
+            union {
+                uint32_t e1c;
+                struct { DECL_BITFIELD(e1c); };
+            };
+            union {
+                uint32_t e1d;
+                struct { DECL_BITFIELD(e1d); };
+            };
+
+            uint64_t :64, :64; /* Brand string. */
+            uint64_t :64, :64; /* Brand string. */
+            uint64_t :64, :64; /* Brand string. */
+            uint64_t :64, :64; /* L1 cache/TLB. */
+            uint64_t :64, :64; /* L2/3 cache/TLB. */
+
+            /* Leaf 0x80000007 - Advanced Power Management. */
+            uint32_t /* a */:32, /* b */:32, /* c */:32;
+            union {
+                uint32_t e7d;
+                struct { DECL_BITFIELD(e7d); };
+            };
+
+            /* Leaf 0x80000008 - Misc addr/feature info. */
+            uint8_t maxphysaddr, maxlinaddr, :8, :8;
+            union {
+                uint32_t e8b;
+                struct { DECL_BITFIELD(e8b); };
+            };
+            uint32_t /* c */:32, /* d */:32;
+        };
+    } extd;
+
+#undef __DECL_BITFIELD
+#undef _DECL_BITFIELD
+#undef DECL_BITFIELD
+
+    /* Toolstack selected Hypervisor max_leaf (if non-zero). */
+    uint8_t hv_limit, hv2_limit;
+
+    /* Value calculated from raw data above. */
+    uint8_t x86_vendor;
+
+    /* Temporary: Legacy data array. */
+#define MAX_CPUID_INPUT 40
+    xen_domctl_cpuid_t legacy[MAX_CPUID_INPUT];
+};
+
+/* Fill in a featureset bitmap from a CPUID policy. */
+static inline void cpuid_policy_to_featureset(
+    const struct cpuid_policy *p, uint32_t fs[FSCAPINTS])
+{
+    fs[FEATURESET_1d]  = p->basic._1d;
+    fs[FEATURESET_1c]  = p->basic._1c;
+    fs[FEATURESET_e1d] = p->extd.e1d;
+    fs[FEATURESET_e1c] = p->extd.e1c;
+    fs[FEATURESET_Da1] = p->xstate.Da1;
+    fs[FEATURESET_7b0] = p->feat._7b0;
+    fs[FEATURESET_7c0] = p->feat._7c0;
+    fs[FEATURESET_e7d] = p->extd.e7d;
+    fs[FEATURESET_e8b] = p->extd.e8b;
+    fs[FEATURESET_7d0] = p->feat._7d0;
+}
+
+/* Fill in a CPUID policy from a featureset bitmap. */
+static inline void cpuid_featureset_to_policy(
+    const uint32_t fs[FSCAPINTS], struct cpuid_policy *p)
+{
+    p->basic._1d  = fs[FEATURESET_1d];
+    p->basic._1c  = fs[FEATURESET_1c];
+    p->extd.e1d   = fs[FEATURESET_e1d];
+    p->extd.e1c   = fs[FEATURESET_e1c];
+    p->xstate.Da1 = fs[FEATURESET_Da1];
+    p->feat._7b0  = fs[FEATURESET_7b0];
+    p->feat._7c0  = fs[FEATURESET_7c0];
+    p->extd.e7d   = fs[FEATURESET_e7d];
+    p->extd.e8b   = fs[FEATURESET_e8b];
+    p->feat._7d0  = fs[FEATURESET_7d0];
+}
+
+extern struct cpuid_policy raw_policy, host_policy, pv_max_policy,
+    hvm_max_policy;
+
+/* Allocate and initialise a CPUID policy suitable for the domain. */
+int init_domain_cpuid_policy(struct domain *d);
+
+/* Clamp the CPUID policy to reality. */
+void recalculate_cpuid_policy(struct domain *d);
+
+void guest_cpuid(const struct vcpu *v, uint32_t leaf,
+                 uint32_t subleaf, struct cpuid_leaf *res);
 
 #endif /* __ASSEMBLY__ */
 #endif /* !__X86_CPUID_H__ */

@@ -5,7 +5,7 @@ subdir-$(CONFIG_ARM_64) += efi
 subdir-$(CONFIG_ACPI) += acpi
 
 obj-$(CONFIG_HAS_ALTERNATIVE) += alternative.o
-obj-y += bootfdt.o
+obj-y += bootfdt.init.o
 obj-y += cpu.o
 obj-y += cpuerrata.o
 obj-y += cpufeature.o
@@ -24,6 +24,7 @@ obj-y += io.o
 obj-y += irq.o
 obj-y += kernel.o
 obj-$(CONFIG_LIVEPATCH) += livepatch.o
+obj-y += mem_access.o
 obj-y += mm.o
 obj-y += monitor.o
 obj-y += p2m.o

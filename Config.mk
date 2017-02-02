@@ -16,11 +16,6 @@ or       = $(if $(strip $(1)),$(1),$(if $(strip $(2)),$(2),$(if $(strip $(3)),$(
 
 -include $(XEN_ROOT)/.config
 
-# A debug build of tools?
-# Hypervisor debug build is controlled by Kconfig.
-debug ?= y
-debug_symbols ?= $(debug)
-
 XEN_COMPILE_ARCH    ?= $(shell uname -m | sed -e s/i.86/x86_32/ \
                          -e s/i86pc/x86_32/ -e s/amd64/x86_64/ \
                          -e s/armv7.*/arm32/ -e s/armv8.*/arm64/ \
@@ -211,10 +206,6 @@ define buildmakevars2header-closure
 	$(call move-if-changed,$(1).tmp,$(1))
 endef
 
-ifeq ($(debug_symbols),y)
-CFLAGS += -g
-endif
-
 CFLAGS += -fno-strict-aliasing
 
 CFLAGS += -std=gnu99
@@ -281,11 +272,11 @@ QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= bc54e50e0fe03c570014f363b547426913e92449
+OVMF_UPSTREAM_REVISION ?= 5734d486b6aa0b69a39b2c8d52b355400bcf2551
 QEMU_UPSTREAM_REVISION ?= master
-MINIOS_UPSTREAM_REVISION ?= e20998fbec0af4d783abb1a0695ab4614064c520
-# Wed Sep 28 11:50:04 2016 +0200
-# minios: fix build issue with xen_*mb defines
+MINIOS_UPSTREAM_REVISION ?= 1e8e464febb32428c7651b0b585866e5ee5f786e
+# Tue Dec 13 15:02:02 2016 +0000
+# build: prepend OBJ_DIR to linker script
 
 SEABIOS_UPSTREAM_REVISION ?= rel-1.10.0
 # Wed Jun 22 14:53:24 2016 +0800

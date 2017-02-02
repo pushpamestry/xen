@@ -145,11 +145,6 @@ void __init xsm_fixup_ops (struct xsm_operations *ops)
 #ifdef CONFIG_X86
     set_to_dummy_if_null(ops, do_mca);
     set_to_dummy_if_null(ops, shadow_control);
-    set_to_dummy_if_null(ops, hvm_set_pci_intx_level);
-    set_to_dummy_if_null(ops, hvm_set_isa_irq_level);
-    set_to_dummy_if_null(ops, hvm_set_pci_link_route);
-    set_to_dummy_if_null(ops, hvm_inject_msi);
-    set_to_dummy_if_null(ops, hvm_ioreq_server);
     set_to_dummy_if_null(ops, mem_sharing_op);
     set_to_dummy_if_null(ops, apic);
     set_to_dummy_if_null(ops, machine_memory_map);
@@ -161,6 +156,7 @@ void __init xsm_fixup_ops (struct xsm_operations *ops)
     set_to_dummy_if_null(ops, ioport_permission);
     set_to_dummy_if_null(ops, ioport_mapping);
     set_to_dummy_if_null(ops, pmu_op);
+    set_to_dummy_if_null(ops, dm_op);
 #endif
     set_to_dummy_if_null(ops, xen_version);
 }

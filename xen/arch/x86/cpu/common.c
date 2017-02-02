@@ -156,17 +156,20 @@ void display_cacheinfo(struct cpuinfo_x86 *c)
 		       l2size, ecx & 0xFF);
 }
 
-int get_cpu_vendor(const char v[], enum get_cpu_vendor mode)
+int get_cpu_vendor(uint32_t b, uint32_t c, uint32_t d, enum get_cpu_vendor mode)
 {
 	int i;
 	static int printed;
 
 	for (i = 0; i < X86_VENDOR_NUM; i++) {
 		if (cpu_devs[i]) {
-			if (!strcmp(v,cpu_devs[i]->c_ident[0]) ||
-			    (cpu_devs[i]->c_ident[1] && 
-			     !strcmp(v,cpu_devs[i]->c_ident[1]))) {
-				this_cpu = cpu_devs[i];
+			struct {
+				uint32_t b, d, c;
+			} *ptr = (void *)cpu_devs[i]->c_ident;
+
+			if (ptr->b == b && ptr->c == c && ptr->d == d) {
+				if (mode == gcv_host)
+					this_cpu = cpu_devs[i];
 				return i;
 			}
 		}
@@ -181,25 +184,6 @@ int get_cpu_vendor(const char v[], enum get_cpu_vendor mode)
 	this_cpu = &default_cpu;
 
 	return X86_VENDOR_UNKNOWN;
-}
-
-uint8_t get_cpu_family(uint32_t raw, uint8_t *model, uint8_t *stepping)
-{
-	uint8_t fam, mod;
-
-	fam = (raw >> 8) & 0xf;
-	if (fam == 0xf)
-		fam += (raw >> 20) & 0xff;
-
-	mod = (raw >> 4) & 0xf;
-	if (fam >= 0x6)
-		mod |= (raw >> 12) & 0xf0;
-
-	if (model)
-		*model = mod;
-	if (stepping)
-		*stepping = raw & 0xf;
-	return fam;
 }
 
 static inline u32 _phys_pkg_id(u32 cpuid_apic, int index_msb)
@@ -233,12 +217,12 @@ static void __init early_cpu_detect(void)
 	c->x86_cache_alignment = 32;
 
 	/* Get vendor name */
-	cpuid(0x00000000, &c->cpuid_level,
-	      (int *)&c->x86_vendor_id[0],
-	      (int *)&c->x86_vendor_id[8],
-	      (int *)&c->x86_vendor_id[4]);
+	cpuid(0x00000000, &c->cpuid_level, &ebx, &ecx, &edx);
+	*(u32 *)&c->x86_vendor_id[0] = ebx;
+	*(u32 *)&c->x86_vendor_id[8] = ecx;
+	*(u32 *)&c->x86_vendor_id[4] = edx;
 
-	c->x86_vendor = get_cpu_vendor(c->x86_vendor_id, gcv_host);
+	c->x86_vendor = get_cpu_vendor(ebx, ecx, edx, gcv_host);
 
 	cpuid(0x00000001, &eax, &ebx, &ecx, &edx);
 	c->x86 = get_cpu_family(eax, &c->x86_model, &c->x86_mask);
@@ -276,12 +260,12 @@ static void generic_identify(struct cpuinfo_x86 *c)
 	u32 eax, ebx, ecx, edx, tmp;
 
 	/* Get vendor name */
-	cpuid(0x00000000, &c->cpuid_level,
-	      (int *)&c->x86_vendor_id[0],
-	      (int *)&c->x86_vendor_id[8],
-	      (int *)&c->x86_vendor_id[4]);
+	cpuid(0x00000000, &c->cpuid_level, &ebx, &ecx, &edx);
+	*(u32 *)&c->x86_vendor_id[0] = ebx;
+	*(u32 *)&c->x86_vendor_id[8] = ecx;
+	*(u32 *)&c->x86_vendor_id[4] = edx;
 
-	c->x86_vendor = get_cpu_vendor(c->x86_vendor_id, gcv_host);
+	c->x86_vendor = get_cpu_vendor(ebx, ecx, edx, gcv_host);
 	/* Initialize the standard set of capabilities */
 	/* Note that the vendor-specific code below might override */
 

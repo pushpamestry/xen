@@ -440,7 +440,7 @@ bool_t mtrr_fix_range_msr_set(struct domain *d, struct mtrr_state *m,
 bool_t mtrr_var_range_msr_set(
     struct domain *d, struct mtrr_state *m, uint32_t msr, uint64_t msr_content)
 {
-    uint32_t index, phys_addr, eax;
+    uint32_t index, phys_addr;
     uint64_t msr_mask;
     uint64_t *var_range_base = (uint64_t*)m->var_ranges;
 
@@ -452,15 +452,7 @@ bool_t mtrr_var_range_msr_set(
         return 0;
 
     if ( d == current->domain )
-    {
-        phys_addr = 36;
-        hvm_cpuid(0x80000000, &eax, NULL, NULL, NULL);
-        if ( (eax >> 16) == 0x8000 && eax >= 0x80000008 )
-        {
-            hvm_cpuid(0x80000008, &eax, NULL, NULL, NULL);
-            phys_addr = (uint8_t)eax;
-        }
-    }
+        phys_addr = d->arch.cpuid->extd.maxphysaddr;
     else
         phys_addr = paddr_bits;
     msr_mask = ~((((uint64_t)1) << phys_addr) - 1);

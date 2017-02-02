@@ -442,7 +442,7 @@ static int hvmemul_linear_to_phys(
     }
 
     /* Reverse mode if this is a backwards multi-iteration string operation. */
-    reverse = (hvmemul_ctxt->ctxt.regs->eflags & X86_EFLAGS_DF) && (*reps > 1);
+    reverse = (hvmemul_ctxt->ctxt.regs->_eflags & X86_EFLAGS_DF) && (*reps > 1);
 
     if ( reverse && ((PAGE_SIZE - offset) < bytes_per_rep) )
     {
@@ -459,6 +459,7 @@ static int hvmemul_linear_to_phys(
     {
         if ( pfec & (PFEC_page_paged | PFEC_page_shared) )
             return X86EMUL_RETRY;
+        *reps = 0;
         x86_emul_pagefault(pfec, addr, &hvmemul_ctxt->ctxt);
         return X86EMUL_EXCEPTION;
     }
@@ -478,6 +479,7 @@ static int hvmemul_linear_to_phys(
             if ( pfec & (PFEC_page_paged | PFEC_page_shared) )
                 return X86EMUL_RETRY;
             done /= bytes_per_rep;
+            *reps = done;
             if ( done == 0 )
             {
                 ASSERT(!reverse);
@@ -486,7 +488,6 @@ static int hvmemul_linear_to_phys(
                 x86_emul_pagefault(pfec, addr & PAGE_MASK, &hvmemul_ctxt->ctxt);
                 return X86EMUL_EXCEPTION;
             }
-            *reps = done;
             break;
         }
 
@@ -538,7 +539,7 @@ static int hvmemul_virtual_to_linear(
     if ( IS_ERR(reg) )
         return -PTR_ERR(reg);
 
-    if ( (hvmemul_ctxt->ctxt.regs->eflags & X86_EFLAGS_DF) && (*reps > 1) )
+    if ( (hvmemul_ctxt->ctxt.regs->_eflags & X86_EFLAGS_DF) && (*reps > 1) )
     {
         /*
          * x86_emulate() clips the repetition count to ensure we don't wrap
@@ -572,6 +573,7 @@ static int hvmemul_virtual_to_linear(
      * neither know the exact error code to be used, nor can we easily
      * determine the kind of exception (#GP or #TS) in that case.
      */
+    *reps = 0;
     if ( is_x86_user_segment(seg) )
         x86_emul_hw_exception((seg == x86_seg_ss)
                               ? TRAP_stack_error
@@ -1037,6 +1039,17 @@ static int hvmemul_cmpxchg(
     return hvmemul_write(seg, offset, p_new, bytes, ctxt);
 }
 
+static int hvmemul_validate(
+    const struct x86_emulate_state *state,
+    struct x86_emulate_ctxt *ctxt)
+{
+    const struct hvm_emulate_ctxt *hvmemul_ctxt =
+        container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
+
+    return !hvmemul_ctxt->validate || hvmemul_ctxt->validate(state, ctxt)
+           ? X86EMUL_OKAY : X86EMUL_UNHANDLEABLE;
+}
+
 static int hvmemul_rep_ins(
     uint16_t src_port,
     enum x86_segment dst_seg,
@@ -1072,7 +1085,7 @@ static int hvmemul_rep_ins(
         return X86EMUL_UNHANDLEABLE;
 
     return hvmemul_do_pio_addr(src_port, reps, bytes_per_rep, IOREQ_READ,
-                               !!(ctxt->regs->eflags & X86_EFLAGS_DF), gpa);
+                               !!(ctxt->regs->_eflags & X86_EFLAGS_DF), gpa);
 }
 
 static int hvmemul_rep_outs_set_context(
@@ -1141,7 +1154,7 @@ static int hvmemul_rep_outs(
         return X86EMUL_UNHANDLEABLE;
 
     return hvmemul_do_pio_addr(dst_port, reps, bytes_per_rep, IOREQ_WRITE,
-                               !!(ctxt->regs->eflags & X86_EFLAGS_DF), gpa);
+                               !!(ctxt->regs->_eflags & X86_EFLAGS_DF), gpa);
 }
 
 static int hvmemul_rep_movs(
@@ -1160,7 +1173,7 @@ static int hvmemul_rep_movs(
     paddr_t sgpa, dgpa;
     uint32_t pfec = PFEC_page_present;
     p2m_type_t sp2mt, dp2mt;
-    int rc, df = !!(ctxt->regs->eflags & X86_EFLAGS_DF);
+    int rc, df = !!(ctxt->regs->_eflags & X86_EFLAGS_DF);
     char *buf;
 
     rc = hvmemul_virtual_to_linear(
@@ -1314,7 +1327,7 @@ static int hvmemul_rep_stos(
     unsigned long addr, bytes;
     paddr_t gpa;
     p2m_type_t p2mt;
-    bool_t df = !!(ctxt->regs->eflags & X86_EFLAGS_DF);
+    bool_t df = !!(ctxt->regs->_eflags & X86_EFLAGS_DF);
     int rc = hvmemul_virtual_to_linear(seg, offset, bytes_per_rep, reps,
                                        hvm_access_write, hvmemul_ctxt, &addr);
 
@@ -1550,12 +1563,8 @@ static int hvmemul_wbinvd(
     return X86EMUL_OKAY;
 }
 
-int hvmemul_cpuid(
-    unsigned int *eax,
-    unsigned int *ebx,
-    unsigned int *ecx,
-    unsigned int *edx,
-    struct x86_emulate_ctxt *ctxt)
+int hvmemul_cpuid(uint32_t leaf, uint32_t subleaf,
+                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt)
 {
     /*
      * x86_emulate uses this function to query CPU features for its own internal
@@ -1566,7 +1575,7 @@ int hvmemul_cpuid(
          hvm_check_cpuid_faulting(current) )
         return X86EMUL_EXCEPTION;
 
-    hvm_cpuid(*eax, eax, ebx, ecx, edx);
+    guest_cpuid(current, leaf, subleaf, res);
     return X86EMUL_OKAY;
 }
 
@@ -1648,8 +1657,10 @@ static int hvmemul_vmfunc(
 {
     int rc;
 
+    if ( !hvm_funcs.altp2m_vcpu_emulate_vmfunc )
+        return X86EMUL_UNHANDLEABLE;
     rc = hvm_funcs.altp2m_vcpu_emulate_vmfunc(ctxt->regs);
-    if ( rc != X86EMUL_OKAY )
+    if ( rc == X86EMUL_EXCEPTION )
         x86_emul_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC, ctxt);
 
     return rc;
@@ -1660,6 +1671,7 @@ static const struct x86_emulate_ops hvm_emulate_ops = {
     .insn_fetch    = hvmemul_insn_fetch,
     .write         = hvmemul_write,
     .cmpxchg       = hvmemul_cmpxchg,
+    .validate      = hvmemul_validate,
     .rep_ins       = hvmemul_rep_ins,
     .rep_outs      = hvmemul_rep_outs,
     .rep_movs      = hvmemul_rep_movs,
@@ -1764,7 +1776,7 @@ static int _hvm_emulate_one(struct hvm_emulate_ctxt *hvmemul_ctxt,
     if ( hvmemul_ctxt->ctxt.retire.hlt &&
          !hvm_local_events_need_delivery(curr) )
     {
-        hvm_hlt(regs->eflags);
+        hvm_hlt(regs->_eflags);
     }
 
     return X86EMUL_OKAY;
@@ -1805,7 +1817,8 @@ int hvm_emulate_one_mmio(unsigned long mfn, unsigned long gla)
     else
         ops = &hvm_ro_emulate_ops_mmio;
 
-    hvm_emulate_init_once(&ctxt, guest_cpu_user_regs());
+    hvm_emulate_init_once(&ctxt, x86_insn_is_mem_write,
+                          guest_cpu_user_regs());
     ctxt.ctxt.data = &mmio_ro_ctxt;
     rc = _hvm_emulate_one(&ctxt, ops);
     switch ( rc )
@@ -1830,7 +1843,7 @@ void hvm_emulate_one_vm_event(enum emul_kind kind, unsigned int trapnr,
     struct hvm_emulate_ctxt ctx = {{ 0 }};
     int rc;
 
-    hvm_emulate_init_once(&ctx, guest_cpu_user_regs());
+    hvm_emulate_init_once(&ctx, NULL, guest_cpu_user_regs());
 
     switch ( kind )
     {
@@ -1884,6 +1897,7 @@ void hvm_emulate_one_vm_event(enum emul_kind kind, unsigned int trapnr,
 
 void hvm_emulate_init_once(
     struct hvm_emulate_ctxt *hvmemul_ctxt,
+    hvm_emulate_validate_t *validate,
     struct cpu_user_regs *regs)
 {
     struct vcpu *curr = current;
@@ -1894,7 +1908,9 @@ void hvm_emulate_init_once(
     hvmemul_get_seg_reg(x86_seg_cs, hvmemul_ctxt);
     hvmemul_get_seg_reg(x86_seg_ss, hvmemul_ctxt);
 
+    hvmemul_ctxt->validate = validate;
     hvmemul_ctxt->ctxt.regs = regs;
+    hvmemul_ctxt->ctxt.vendor = curr->domain->arch.cpuid->x86_vendor;
     hvmemul_ctxt->ctxt.force_writeback = true;
 
     if ( cpu_has_vmx )
@@ -1928,7 +1944,7 @@ void hvm_emulate_init_per_insn(
     if ( hvmemul_ctxt->seg_reg[x86_seg_ss].attr.fields.dpl == 3 )
         pfec |= PFEC_user_mode;
 
-    hvmemul_ctxt->insn_buf_eip = hvmemul_ctxt->ctxt.regs->eip;
+    hvmemul_ctxt->insn_buf_eip = hvmemul_ctxt->ctxt.regs->rip;
     if ( !insn_bytes )
     {
         hvmemul_ctxt->insn_buf_bytes =

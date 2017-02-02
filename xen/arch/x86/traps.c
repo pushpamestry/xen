@@ -28,6 +28,7 @@
 #include <xen/init.h>
 #include <xen/sched.h>
 #include <xen/lib.h>
+#include <xen/err.h>
 #include <xen/errno.h>
 #include <xen/mm.h>
 #include <xen/console.h>
@@ -201,7 +202,7 @@ static void show_guest_stack(struct vcpu *v, const struct cpu_user_regs *regs)
         return;
     }
 
-    stack = (unsigned long *)regs->esp;
+    stack = (unsigned long *)regs->rsp;
     printk("Guest stack trace from "__OP"sp=%p:\n  ", stack);
 
     if ( !access_ok(stack, sizeof(*stack)) )
@@ -366,8 +367,8 @@ static void _show_trace(unsigned long sp, unsigned long bp)
                 break;
             frame = (unsigned long *)next;
             next  = frame[0];
-            addr  = frame[(offsetof(struct cpu_user_regs, eip) -
-                           offsetof(struct cpu_user_regs, ebp))
+            addr  = frame[(offsetof(struct cpu_user_regs, rip) -
+                           offsetof(struct cpu_user_regs, rbp))
                          / BYTES_PER_LONG];
         }
         else
@@ -622,7 +623,7 @@ void fatal_trap(const struct cpu_user_regs *regs, bool_t show_remote)
     panic("FATAL TRAP: vector = %d (%s)\n"
           "[error_code=%04x] %s",
           trapnr, trapstr(trapnr), regs->error_code,
-          (regs->eflags & X86_EFLAGS_IF) ? "" : ", IN INTERRUPT CONTEXT");
+          (regs->_eflags & X86_EFLAGS_IF) ? "" : ", IN INTERRUPT CONTEXT");
 }
 
 void pv_inject_event(const struct x86_event *event)
@@ -662,7 +663,7 @@ void pv_inject_event(const struct x86_event *event)
         trace_pv_page_fault(event->cr2, error_code);
     }
     else
-        trace_pv_trap(vector, regs->eip, use_error_code, error_code);
+        trace_pv_trap(vector, regs->rip, use_error_code, error_code);
 
     if ( use_error_code )
     {
@@ -696,16 +697,13 @@ static inline void do_guest_trap(unsigned int trapnr,
     pv_inject_event(&event);
 }
 
-static void instruction_done(
-    struct cpu_user_regs *regs, unsigned long eip, unsigned int bpmatch)
+static void instruction_done(struct cpu_user_regs *regs, unsigned long rip)
 {
-    regs->eip = eip;
-    regs->eflags &= ~X86_EFLAGS_RF;
-    if ( bpmatch || (regs->eflags & X86_EFLAGS_TF) )
+    regs->rip = rip;
+    regs->_eflags &= ~X86_EFLAGS_RF;
+    if ( regs->_eflags & X86_EFLAGS_TF )
     {
-        current->arch.debugreg[6] |= bpmatch | DR_STATUS_RESERVED_ONE;
-        if ( regs->eflags & X86_EFLAGS_TF )
-            current->arch.debugreg[6] |= DR_STEP;
+        current->arch.debugreg[6] |= DR_STEP | DR_STATUS_RESERVED_ONE;
         do_guest_trap(TRAP_debug, regs);
     }
 }
@@ -801,12 +799,12 @@ void do_trap(struct cpu_user_regs *regs)
         return;
     }
 
-    if ( likely((fixup = search_exception_table(regs->eip)) != 0) )
+    if ( likely((fixup = search_exception_table(regs->rip)) != 0) )
     {
         dprintk(XENLOG_ERR, "Trap %d: %p -> %p\n",
-                trapnr, _p(regs->eip), _p(fixup));
-        this_cpu(last_extable_addr) = regs->eip;
-        regs->eip = fixup;
+                trapnr, _p(regs->rip), _p(fixup));
+        this_cpu(last_extable_addr) = regs->rip;
+        regs->rip = fixup;
         return;
     }
 
@@ -904,110 +902,86 @@ int wrmsr_hypervisor_regs(uint32_t idx, uint64_t val)
     return 0;
 }
 
-int cpuid_hypervisor_leaves( uint32_t idx, uint32_t sub_idx,
-               uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx)
+void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
+                             uint32_t subleaf, struct cpuid_leaf *res)
 {
-    struct vcpu *curr = current;
-    struct domain *currd = curr->domain;
-    /* Optionally shift out of the way of Viridian architectural leaves. */
-    uint32_t base = is_viridian_domain(currd) ? 0x40000100 : 0x40000000;
-    uint32_t limit, dummy;
+    const struct domain *d = v->domain;
+    const struct cpuid_policy *p = d->arch.cpuid;
+    uint32_t base = is_viridian_domain(d) ? 0x40000100 : 0x40000000;
+    uint32_t idx  = leaf - base;
+    unsigned int limit = is_viridian_domain(d) ? p->hv2_limit : p->hv_limit;
 
-    idx -= base;
-    if ( idx > XEN_CPUID_MAX_NUM_LEAVES )
-        return 0; /* Avoid unnecessary pass through domain_cpuid() */
-
-    domain_cpuid(currd, base, 0, &limit, &dummy, &dummy, &dummy);
     if ( limit == 0 )
         /* Default number of leaves */
         limit = XEN_CPUID_MAX_NUM_LEAVES;
     else
-    {
-        /* User-specified number of leaves */
-        limit &= 0xff;
-        if ( limit < 2 )
-            limit = 2;
-        else if ( limit > XEN_CPUID_MAX_NUM_LEAVES )
-            limit = XEN_CPUID_MAX_NUM_LEAVES;
-    }
+        /* Clamp toolstack value between 2 and MAX_NUM_LEAVES. */
+        limit = min(max(limit, 2u), XEN_CPUID_MAX_NUM_LEAVES + 0u);
 
-    if ( idx > limit ) 
-        return 0;
+    if ( idx > limit )
+        return;
 
     switch ( idx )
     {
     case 0:
-        *eax = base + limit; /* Largest leaf */
-        *ebx = XEN_CPUID_SIGNATURE_EBX;
-        *ecx = XEN_CPUID_SIGNATURE_ECX;
-        *edx = XEN_CPUID_SIGNATURE_EDX;
+        res->a = base + limit; /* Largest leaf */
+        res->b = XEN_CPUID_SIGNATURE_EBX;
+        res->c = XEN_CPUID_SIGNATURE_ECX;
+        res->d = XEN_CPUID_SIGNATURE_EDX;
         break;
 
     case 1:
-        *eax = (xen_major_version() << 16) | xen_minor_version();
-        *ebx = 0;          /* Reserved */
-        *ecx = 0;          /* Reserved */
-        *edx = 0;          /* Reserved */
+        res->a = (xen_major_version() << 16) | xen_minor_version();
         break;
 
     case 2:
-        *eax = 1;          /* Number of hypercall-transfer pages */
-        *ebx = 0x40000000; /* MSR base address */
-        if ( is_viridian_domain(currd) )
-            *ebx = 0x40000200;
-        *ecx = 0;          /* Features 1 */
-        *edx = 0;          /* Features 2 */
-        if ( is_pv_domain(currd) )
-            *ecx |= XEN_CPUID_FEAT1_MMU_PT_UPDATE_PRESERVE_AD;
+        res->a = 1;            /* Number of hypercall-transfer pages */
+                               /* MSR base address */
+        res->b = is_viridian_domain(d) ? 0x40000200 : 0x40000000;
+        if ( is_pv_domain(d) ) /* Features */
+            res->c |= XEN_CPUID_FEAT1_MMU_PT_UPDATE_PRESERVE_AD;
         break;
 
     case 3: /* Time leaf. */
-        switch ( sub_idx )
+        switch ( subleaf )
         {
         case 0: /* features */
-            *eax = ((!!currd->arch.vtsc << 0) |
-                    (!!host_tsc_is_safe() << 1) |
-                    (!!boot_cpu_has(X86_FEATURE_RDTSCP) << 2));
-            *ebx = currd->arch.tsc_mode;
-            *ecx = currd->arch.tsc_khz;
-            *edx = currd->arch.incarnation;
+            res->a = ((d->arch.vtsc << 0) |
+                      (!!host_tsc_is_safe() << 1) |
+                      (!!boot_cpu_has(X86_FEATURE_RDTSCP) << 2));
+            res->b = d->arch.tsc_mode;
+            res->c = d->arch.tsc_khz;
+            res->d = d->arch.incarnation;
             break;
 
         case 1: /* scale and offset */
         {
             uint64_t offset;
 
-            if ( !currd->arch.vtsc )
-                offset = currd->arch.vtsc_offset;
+            if ( !d->arch.vtsc )
+                offset = d->arch.vtsc_offset;
             else
                 /* offset already applied to value returned by virtual rdtscp */
                 offset = 0;
-            *eax = (uint32_t)offset;
-            *ebx = (uint32_t)(offset >> 32);
-            *ecx = currd->arch.vtsc_to_ns.mul_frac;
-            *edx = (s8)currd->arch.vtsc_to_ns.shift;
+            res->a = offset;
+            res->b = offset >> 32;
+            res->c = d->arch.vtsc_to_ns.mul_frac;
+            res->d = (s8)d->arch.vtsc_to_ns.shift;
             break;
         }
 
         case 2: /* physical cpu_khz */
-            *eax = cpu_khz;
-            *ebx = *ecx = *edx = 0;
-            break;
-
-        default:
-            *eax = *ebx = *ecx = *edx = 0;
+            res->a = cpu_khz;
             break;
         }
         break;
 
     case 4: /* HVM hypervisor leaf. */
-        *eax = *ebx = *ecx = *edx = 0;
-
-        if ( !has_hvm_container_domain(currd) || sub_idx != 0 )
+        if ( !has_hvm_container_domain(d) || subleaf != 0 )
             break;
 
         if ( cpu_has_vmx_apic_reg_virt )
-            *eax |= XEN_HVM_CPUID_APIC_ACCESS_VIRT;
+            res->a |= XEN_HVM_CPUID_APIC_ACCESS_VIRT;
 
         /*
          * We want to claim that x2APIC is virtualized if APIC MSR accesses
@@ -1018,376 +992,22 @@ int cpuid_hypervisor_leaves( uint32_t idx, uint32_t sub_idx,
         if ( cpu_has_vmx_virtualize_x2apic_mode &&
              cpu_has_vmx_apic_reg_virt &&
              cpu_has_vmx_virtual_intr_delivery )
-            *eax |= XEN_HVM_CPUID_X2APIC_VIRT;
+            res->a |= XEN_HVM_CPUID_X2APIC_VIRT;
 
         /*
          * Indicate that memory mapped from other domains (either grants or
          * foreign pages) has valid IOMMU entries.
          */
-        *eax |= XEN_HVM_CPUID_IOMMU_MAPPINGS;
+        res->a |= XEN_HVM_CPUID_IOMMU_MAPPINGS;
 
         /* Indicate presence of vcpu id and set it in ebx */
-        *eax |= XEN_HVM_CPUID_VCPU_ID_PRESENT;
-        *ebx = curr->vcpu_id;
+        res->a |= XEN_HVM_CPUID_VCPU_ID_PRESENT;
+        res->b = v->vcpu_id;
         break;
 
     default:
-        BUG();
+        ASSERT_UNREACHABLE();
     }
-
-    return 1;
-}
-
-void pv_cpuid(struct cpu_user_regs *regs)
-{
-    uint32_t leaf, subleaf, a, b, c, d;
-    struct vcpu *curr = current;
-    struct domain *currd = curr->domain;
-
-    leaf = a = regs->eax;
-    b = regs->ebx;
-    subleaf = c = regs->ecx;
-    d = regs->edx;
-
-    if ( cpuid_hypervisor_leaves(leaf, subleaf, &a, &b, &c, &d) )
-        goto out;
-
-    if ( leaf & 0x7fffffff )
-    {
-        /*
-         * Requests outside the supported leaf ranges return zero on AMD
-         * and the highest basic leaf output on Intel. Uniformly follow
-         * the AMD model as the more sane one.
-         */
-        unsigned int limit = (leaf >> 16) != 0x8000 ? 0 : 0x80000000, dummy;
-
-        if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
-            domain_cpuid(currd, limit, 0, &limit, &dummy, &dummy, &dummy);
-        else
-            limit = cpuid_eax(limit);
-        if ( leaf > limit )
-        {
-            regs->eax = 0;
-            regs->ebx = 0;
-            regs->ecx = 0;
-            regs->edx = 0;
-            return;
-        }
-    }
-
-    if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
-        domain_cpuid(currd, leaf, subleaf, &a, &b, &c, &d);
-    else
-        cpuid_count(leaf, subleaf, &a, &b, &c, &d);
-
-    switch ( leaf )
-    {
-        uint32_t tmp, _ecx, _ebx;
-
-    case 0x00000001:
-        c &= pv_featureset[FEATURESET_1c];
-        d &= pv_featureset[FEATURESET_1d];
-
-        if ( is_pv_32bit_domain(currd) )
-            c &= ~cpufeat_mask(X86_FEATURE_CX16);
-
-        if ( !is_pvh_domain(currd) )
-        {
-            /*
-             * Delete the PVH condition when HVMLite formally replaces PVH,
-             * and HVM guests no longer enter a PV codepath.
-             */
-
-            /*
-             * !!! OSXSAVE handling for PV guests is non-architectural !!!
-             *
-             * Architecturally, the correct code here is simply:
-             *
-             *   if ( curr->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE )
-             *       c |= cpufeat_mask(X86_FEATURE_OSXSAVE);
-             *
-             * However because of bugs in Xen (before c/s bd19080b, Nov 2010,
-             * the XSAVE cpuid flag leaked into guests despite the feature not
-             * being available for use), buggy workarounds where introduced to
-             * Linux (c/s 947ccf9c, also Nov 2010) which relied on the fact
-             * that Xen also incorrectly leaked OSXSAVE into the guest.
-             *
-             * Furthermore, providing architectural OSXSAVE behaviour to a
-             * many Linux PV guests triggered a further kernel bug when the
-             * fpu code observes that XSAVEOPT is available, assumes that
-             * xsave state had been set up for the task, and follows a wild
-             * pointer.
-             *
-             * Older Linux PVOPS kernels however do require architectural
-             * behaviour.  They observe Xen's leaked OSXSAVE and assume they
-             * can already use XSETBV, dying with a #UD because the shadowed
-             * CR4.OSXSAVE is clear.  This behaviour has been adjusted in all
-             * observed cases via stable backports of the above changeset.
-             *
-             * Therefore, the leaking of Xen's OSXSAVE setting has become a
-             * defacto part of the PV ABI and can't reasonably be corrected.
-             * It can however be restricted to only the enlightened CPUID
-             * view, as seen by the guest kernel.
-             *
-             * The following situations and logic now applies:
-             *
-             * - Hardware without CPUID faulting support and native CPUID:
-             *    There is nothing Xen can do here.  The hosts XSAVE flag will
-             *    leak through and Xen's OSXSAVE choice will leak through.
-             *
-             *    In the case that the guest kernel has not set up OSXSAVE, only
-             *    SSE will be set in xcr0, and guest userspace can't do too much
-             *    damage itself.
-             *
-             * - Enlightened CPUID or CPUID faulting available:
-             *    Xen can fully control what is seen here.  Guest kernels need
-             *    to see the leaked OSXSAVE via the enlightened path, but
-             *    guest userspace and the native is given architectural
-             *    behaviour.
-             *
-             *    Emulated vs Faulted CPUID is distinguised based on whether a
-             *    #UD or #GP is currently being serviced.
-             */
-            /* OSXSAVE cleared by pv_featureset.  Fast-forward CR4 back in. */
-            if ( (curr->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE) ||
-                 (regs->entry_vector == TRAP_invalid_op &&
-                  guest_kernel_mode(curr, regs) &&
-                  (read_cr4() & X86_CR4_OSXSAVE)) )
-                c |= cpufeat_mask(X86_FEATURE_OSXSAVE);
-
-            /*
-             * At the time of writing, a PV domain is the only viable option
-             * for Dom0.  Several interactions between dom0 and Xen for real
-             * hardware setup have unfortunately been implemented based on
-             * state which incorrectly leaked into dom0.
-             *
-             * These leaks are retained for backwards compatibility, but
-             * restricted to the hardware domains kernel only.
-             */
-            if ( is_hardware_domain(currd) && guest_kernel_mode(curr, regs) )
-            {
-                /*
-                 * MTRR used to unconditionally leak into PV guests.  They
-                 * cannot MTRR infrastructure at all, and shouldn't be able to
-                 * see the feature.
-                 *
-                 * Modern PVOPS Linux self-clobbers the MTRR feature, to avoid
-                 * trying to use the associated MSRs.  Xenolinux-based PV dom0's
-                 * however use the MTRR feature as an indication of the presence
-                 * of the XENPF_{add,del,read}_memtype hypercalls.
-                 */
-                if ( cpu_has_mtrr )
-                    d |= cpufeat_mask(X86_FEATURE_MTRR);
-
-                /*
-                 * MONITOR never leaked into PV guests, as PV guests cannot
-                 * use the MONITOR/MWAIT instructions.  As such, they require
-                 * the feature to not being present in emulated CPUID.
-                 *
-                 * Modern PVOPS Linux try to be cunning and use native CPUID
-                 * to see if the hardware actually supports MONITOR, and by
-                 * extension, deep C states.
-                 *
-                 * If the feature is seen, deep-C state information is
-                 * obtained from the DSDT and handed back to Xen via the
-                 * XENPF_set_processor_pminfo hypercall.
-                 *
-                 * This mechanism is incompatible with an HVM-based hardware
-                 * domain, and also with CPUID Faulting.
-                 *
-                 * Luckily, Xen can be just as 'cunning', and distinguish an
-                 * emulated CPUID from a faulted CPUID by whether a #UD or #GP
-                 * fault is currently being serviced.  Yuck...
-                 */
-                if ( cpu_has_monitor && regs->entry_vector == TRAP_gp_fault )
-                    c |= cpufeat_mask(X86_FEATURE_MONITOR);
-
-                /*
-                 * While MONITOR never leaked into PV guests, EIST always used
-                 * to.
-                 *
-                 * Modern PVOPS will only parse P state information from the
-                 * DSDT and return it to Xen if EIST is seen in the emulated
-                 * CPUID information.
-                 */
-                if ( cpu_has_eist )
-                    c |= cpufeat_mask(X86_FEATURE_EIST);
-            }
-        }
-
-        if ( vpmu_enabled(curr) &&
-             vpmu_is_set(vcpu_vpmu(curr), VPMU_CPU_HAS_DS) )
-        {
-            d |= cpufeat_mask(X86_FEATURE_DS);
-            if ( cpu_has(&current_cpu_data, X86_FEATURE_DTES64) )
-                c |= cpufeat_mask(X86_FEATURE_DTES64);
-            if ( cpu_has(&current_cpu_data, X86_FEATURE_DSCPL) )
-                c |= cpufeat_mask(X86_FEATURE_DSCPL);
-        }
-
-        c |= cpufeat_mask(X86_FEATURE_HYPERVISOR);
-        break;
-
-    case 0x00000007:
-        if ( subleaf == 0 )
-        {
-            /* Fold host's FDP_EXCP_ONLY and NO_FPU_SEL into guest's view. */
-            b &= (pv_featureset[FEATURESET_7b0] &
-                  ~special_features[FEATURESET_7b0]);
-            b |= (host_featureset[FEATURESET_7b0] &
-                  special_features[FEATURESET_7b0]);
-
-            c &= pv_featureset[FEATURESET_7c0];
-            d &= pv_featureset[FEATURESET_7d0];
-
-            if ( !is_pvh_domain(currd) )
-            {
-                /*
-                 * Delete the PVH condition when HVMLite formally replaces PVH,
-                 * and HVM guests no longer enter a PV codepath.
-                 */
-
-                /* OSPKE cleared by pv_featureset.  Fast-forward CR4 back in. */
-                if ( curr->arch.pv_vcpu.ctrlreg[4] & X86_CR4_PKE )
-                    c |= cpufeat_mask(X86_FEATURE_OSPKE);
-            }
-        }
-        else
-            b = c = d = 0;
-        a = 0;
-        break;
-
-    case 0x0000000a: /* Architectural Performance Monitor Features (Intel) */
-        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
-             !vpmu_enabled(curr) )
-            goto unsupported;
-
-        /* Report at most version 3 since that's all we currently emulate. */
-        if ( (a & 0xff) > 3 )
-            a = (a & ~0xff) | 3;
-        break;
-
-    case XSTATE_CPUID:
-
-        if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
-            domain_cpuid(currd, 1, 0, &tmp, &tmp, &_ecx, &tmp);
-        else
-            _ecx = cpuid_ecx(1);
-        _ecx &= pv_featureset[FEATURESET_1c];
-
-        if ( !(_ecx & cpufeat_mask(X86_FEATURE_XSAVE)) || subleaf >= 63 )
-            goto unsupported;
-        switch ( subleaf )
-        {
-        case 0:
-        {
-            uint64_t xfeature_mask = XSTATE_FP_SSE;
-            uint32_t xstate_size = XSTATE_AREA_MIN_SIZE;
-
-            if ( _ecx & cpufeat_mask(X86_FEATURE_AVX) )
-            {
-                xfeature_mask |= XSTATE_YMM;
-                xstate_size = (xstate_offsets[_XSTATE_YMM] +
-                               xstate_sizes[_XSTATE_YMM]);
-            }
-
-            if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
-                domain_cpuid(currd, 7, 0, &tmp, &_ebx, &tmp, &tmp);
-            else
-                cpuid_count(7, 0, &tmp, &_ebx, &tmp, &tmp);
-            _ebx &= pv_featureset[FEATURESET_7b0];
-
-            if ( _ebx & cpufeat_mask(X86_FEATURE_AVX512F) )
-            {
-                xfeature_mask |= XSTATE_OPMASK | XSTATE_ZMM | XSTATE_HI_ZMM;
-                xstate_size = max(xstate_size,
-                                  xstate_offsets[_XSTATE_OPMASK] +
-                                  xstate_sizes[_XSTATE_OPMASK]);
-                xstate_size = max(xstate_size,
-                                  xstate_offsets[_XSTATE_ZMM] +
-                                  xstate_sizes[_XSTATE_ZMM]);
-                xstate_size = max(xstate_size,
-                                  xstate_offsets[_XSTATE_HI_ZMM] +
-                                  xstate_sizes[_XSTATE_HI_ZMM]);
-            }
-
-            a = (uint32_t)xfeature_mask;
-            d = (uint32_t)(xfeature_mask >> 32);
-            c = xstate_size;
-
-            /*
-             * Always read CPUID.0xD[ECX=0].EBX from hardware, rather than
-             * domain policy.  It varies with enabled xstate, and the correct
-             * xcr0 is in context.
-             */
-            cpuid_count(leaf, subleaf, &tmp, &b, &tmp, &tmp);
-            break;
-        }
-
-        case 1:
-            a &= pv_featureset[FEATURESET_Da1];
-            b = c = d = 0;
-            break;
-        }
-        break;
-
-    case 0x80000001:
-        c &= pv_featureset[FEATURESET_e1c];
-        d &= pv_featureset[FEATURESET_e1d];
-
-        /* If not emulating AMD, clear the duplicated features in e1d. */
-        if ( currd->arch.x86_vendor != X86_VENDOR_AMD )
-            d &= ~CPUID_COMMON_1D_FEATURES;
-
-        /*
-         * MTRR used to unconditionally leak into PV guests.  They cannot MTRR
-         * infrastructure at all, and shouldn't be able to see the feature.
-         *
-         * Modern PVOPS Linux self-clobbers the MTRR feature, to avoid trying
-         * to use the associated MSRs.  Xenolinux-based PV dom0's however use
-         * the MTRR feature as an indication of the presence of the
-         * XENPF_{add,del,read}_memtype hypercalls.
-         */
-        if ( is_hardware_domain(currd) && guest_kernel_mode(curr, regs) &&
-             cpu_has_mtrr )
-            d |= cpufeat_mask(X86_FEATURE_MTRR);
-
-        if ( is_pv_32bit_domain(currd) )
-        {
-            d &= ~cpufeat_mask(X86_FEATURE_LM);
-            c &= ~cpufeat_mask(X86_FEATURE_LAHF_LM);
-
-            if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD )
-                d &= ~cpufeat_mask(X86_FEATURE_SYSCALL);
-        }
-        break;
-
-    case 0x80000007:
-        d &= (pv_featureset[FEATURESET_e7d] |
-              (host_featureset[FEATURESET_e7d] & cpufeat_mask(X86_FEATURE_ITSC)));
-        break;
-
-    case 0x80000008:
-        a = paddr_bits | (vaddr_bits << 8);
-        b &= pv_featureset[FEATURESET_e8b];
-        break;
-
-    case 0x00000005: /* MONITOR/MWAIT */
-    case 0x0000000b: /* Extended Topology Enumeration */
-    case 0x8000000a: /* SVM revision and features */
-    case 0x8000001b: /* Instruction Based Sampling */
-    case 0x8000001c: /* Light Weight Profiling */
-    case 0x8000001e: /* Extended topology reporting */
-    unsupported:
-        a = b = c = d = 0;
-        break;
-    }
-
- out:
-    regs->eax = a;
-    regs->ebx = b;
-    regs->ecx = c;
-    regs->edx = d;
 }
 
 static int emulate_invalid_rdtscp(struct cpu_user_regs *regs)
@@ -1396,7 +1016,7 @@ static int emulate_invalid_rdtscp(struct cpu_user_regs *regs)
     unsigned long eip, rc;
     struct vcpu *v = current;
 
-    eip = regs->eip;
+    eip = regs->rip;
     if ( (rc = copy_from_user(opcode, (char *)eip, sizeof(opcode))) != 0 )
     {
         pv_inject_page_fault(0, eip + sizeof(opcode) - rc);
@@ -1406,7 +1026,7 @@ static int emulate_invalid_rdtscp(struct cpu_user_regs *regs)
         return 0;
     eip += sizeof(opcode);
     pv_soft_rdtsc(v, regs, 1);
-    instruction_done(regs, eip, 0);
+    instruction_done(regs, eip);
     return EXCRET_fault_fixed;
 }
 
@@ -1414,8 +1034,9 @@ static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
 {
     char sig[5], instr[2];
     unsigned long eip, rc;
+    struct cpuid_leaf res;
 
-    eip = regs->eip;
+    eip = regs->rip;
 
     /* Check for forced emulation signature: ud2 ; .ascii "xen". */
     if ( (rc = copy_from_user(sig, (char *)eip, sizeof(sig))) != 0 )
@@ -1439,18 +1060,23 @@ static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
     /* If cpuid faulting is enabled and CPL>0 inject a #GP in place of #UD. */
     if ( current->arch.cpuid_faulting && !guest_kernel_mode(current, regs) )
     {
-        regs->eip = eip;
+        regs->rip = eip;
         do_guest_trap(TRAP_gp_fault, regs);
         return EXCRET_fault_fixed;
     }
 
     eip += sizeof(instr);
 
-    pv_cpuid(regs);
+    guest_cpuid(current, regs->_eax, regs->_ecx, &res);
 
-    instruction_done(regs, eip, 0);
+    regs->rax = res.a;
+    regs->rbx = res.b;
+    regs->rcx = res.c;
+    regs->rdx = res.d;
 
-    trace_trap_one_addr(TRC_PV_FORCED_INVALID_OP, regs->eip);
+    instruction_done(regs, eip);
+
+    trace_trap_one_addr(TRC_PV_FORCED_INVALID_OP, regs->rip);
 
     return EXCRET_fault_fixed;
 }
@@ -1459,7 +1085,7 @@ void do_invalid_op(struct cpu_user_regs *regs)
 {
     const struct bug_frame *bug = NULL;
     u8 bug_insn[2];
-    const char *prefix = "", *filename, *predicate, *eip = (char *)regs->eip;
+    const char *prefix = "", *filename, *predicate, *eip = (char *)regs->rip;
     unsigned long fixup;
     int id = -1, lineno;
     const struct virtual_region *region;
@@ -1475,12 +1101,12 @@ void do_invalid_op(struct cpu_user_regs *regs)
         return;
     }
 
-    if ( !is_active_kernel_text(regs->eip) ||
+    if ( !is_active_kernel_text(regs->rip) ||
          __copy_from_user(bug_insn, eip, sizeof(bug_insn)) ||
          memcmp(bug_insn, "\xf\xb", sizeof(bug_insn)) )
         goto die;
 
-    region = find_text_region(regs->eip);
+    region = find_text_region(regs->rip);
     if ( region )
     {
         for ( id = 0; id < BUGFRAME_NR; id++ )
@@ -1509,7 +1135,7 @@ void do_invalid_op(struct cpu_user_regs *regs)
         void (*fn)(struct cpu_user_regs *) = bug_ptr(bug);
 
         fn(regs);
-        regs->eip = (unsigned long)eip;
+        regs->rip = (unsigned long)eip;
         return;
     }
 
@@ -1530,7 +1156,7 @@ void do_invalid_op(struct cpu_user_regs *regs)
     case BUGFRAME_warn:
         printk("Xen WARN at %s%s:%d\n", prefix, filename, lineno);
         show_execution_state(regs);
-        regs->eip = (unsigned long)eip;
+        regs->rip = (unsigned long)eip;
         return;
 
     case BUGFRAME_bug:
@@ -1560,10 +1186,10 @@ void do_invalid_op(struct cpu_user_regs *regs)
     }
 
  die:
-    if ( (fixup = search_exception_table(regs->eip)) != 0 )
+    if ( (fixup = search_exception_table(regs->rip)) != 0 )
     {
-        this_cpu(last_extable_addr) = regs->eip;
-        regs->eip = fixup;
+        this_cpu(last_extable_addr) = regs->rip;
+        regs->rip = fixup;
         return;
     }
 
@@ -1624,7 +1250,7 @@ static int handle_gdt_ldt_mapping_fault(
         {
             if ( guest_mode(regs) )
                 trace_trap_two_addr(TRC_PV_GDT_LDT_MAPPING_FAULT,
-                                    regs->eip, offset);
+                                    regs->rip, offset);
         }
         else
         {
@@ -1766,7 +1392,7 @@ leaf:
          *   - Page fault in kernel mode
          */
         if ( (cr4 & X86_CR4_SMAP) && !(error_code & PFEC_user_mode) &&
-             (((regs->cs & 3) == 3) || !(regs->eflags & X86_EFLAGS_AC)) )
+             (((regs->cs & 3) == 3) || !(regs->_eflags & X86_EFLAGS_AC)) )
             return smap_fault;
     }
 
@@ -1796,12 +1422,8 @@ static int fixup_page_fault(unsigned long addr, struct cpu_user_regs *regs)
     struct domain *d = v->domain;
 
     /* No fixups in interrupt context or when interrupts are disabled. */
-    if ( in_irq() || !(regs->eflags & X86_EFLAGS_IF) )
+    if ( in_irq() || !(regs->_eflags & X86_EFLAGS_IF) )
         return 0;
-
-    /* Logdirty mode is the only expected paging mode for PV guests. */
-    if ( paging_mode_enabled(d) )
-        ASSERT(paging_mode_only_log_dirty(d));
 
     if ( !(regs->error_code & PFEC_page_present) &&
           (pagefault_by_memadd(addr, regs)) )
@@ -1833,12 +1455,21 @@ static int fixup_page_fault(unsigned long addr, struct cpu_user_regs *regs)
             return EXCRET_fault_fixed;
     }
 
-    /* Logdirty guests call back into the paging code to update shadows. */
-    if ( paging_mode_log_dirty(d) )
+    /*
+     * For non-external shadowed guests, we fix up both their own pagefaults
+     * and Xen's, since they share the pagetables.  This includes hypervisor
+     * faults, e.g. from copy_to_user().
+     */
+    if ( paging_mode_enabled(d) && !paging_mode_external(d) )
     {
-        int ret = paging_fault(addr, regs);
+        int ret;
+
+        /* Logdirty mode is the only expected paging mode for PV guests. */
+        ASSERT(paging_mode_only_log_dirty(d));
+
+        ret = paging_fault(addr, regs);
         if ( ret == EXCRET_fault_fixed )
-            trace_trap_two_addr(TRC_PV_PAGING_FIXUP, regs->eip, addr);
+            trace_trap_two_addr(TRC_PV_PAGING_FIXUP, regs->rip, addr);
         return ret;
     }
 
@@ -1885,13 +1516,13 @@ void do_page_fault(struct cpu_user_regs *regs)
         if ( pf_type != real_fault )
             return;
 
-        if ( likely((fixup = search_exception_table(regs->eip)) != 0) )
+        if ( likely((fixup = search_exception_table(regs->rip)) != 0) )
         {
             perfc_incr(copy_user_faults);
             if ( unlikely(regs->error_code & PFEC_reserved_bit) )
                 reserved_bit_page_fault(addr, regs);
-            this_cpu(last_extable_addr) = regs->eip;
-            regs->eip = fixup;
+            this_cpu(last_extable_addr) = regs->rip;
+            regs->rip = fixup;
             return;
         }
 
@@ -1941,9 +1572,9 @@ void __init do_early_page_fault(struct cpu_user_regs *regs)
 
     BUG_ON(smp_processor_id() != 0);
 
-    if ( (regs->eip != prev_eip) || (cr2 != prev_cr2) )
+    if ( (regs->rip != prev_eip) || (cr2 != prev_cr2) )
     {
-        prev_eip = regs->eip;
+        prev_eip = regs->rip;
         prev_cr2 = cr2;
         stuck    = 0;
         return;
@@ -1953,7 +1584,7 @@ void __init do_early_page_fault(struct cpu_user_regs *regs)
     {
         console_start_sync();
         printk("Early fatal page fault at %04x:%p (cr2=%p, ec=%04x)\n",
-               regs->cs, _p(regs->eip), _p(cr2), regs->error_code);
+               regs->cs, _p(regs->rip), _p(cr2), regs->error_code);
         fatal_trap(regs, 0);
     }
 }
@@ -2085,6 +1716,167 @@ static int read_gate_descriptor(unsigned int gate_sel,
     }
 
     return 1;
+}
+
+static int pv_emul_virt_to_linear(unsigned long base, unsigned long offset,
+                                  unsigned int bytes, unsigned long limit,
+                                  enum x86_segment seg,
+                                  struct x86_emulate_ctxt *ctxt,
+                                  unsigned long *addr)
+{
+    int rc = X86EMUL_OKAY;
+
+    *addr = base + offset;
+
+    if ( ctxt->addr_size < 64 )
+    {
+        if ( limit < bytes - 1 || offset > limit - bytes + 1 )
+            rc = X86EMUL_EXCEPTION;
+        *addr = (uint32_t)*addr;
+    }
+    else if ( !__addr_ok(*addr) )
+        rc = X86EMUL_EXCEPTION;
+
+    if ( unlikely(rc == X86EMUL_EXCEPTION) )
+        x86_emul_hw_exception(seg != x86_seg_ss ? TRAP_gp_fault
+                                                : TRAP_stack_error,
+                              0, ctxt);
+
+    return rc;
+}
+
+struct priv_op_ctxt {
+    struct x86_emulate_ctxt ctxt;
+    struct {
+        unsigned long base, limit;
+    } cs;
+    char *io_emul_stub;
+    unsigned int bpmatch;
+    unsigned int tsc;
+#define TSC_BASE 1
+#define TSC_AUX 2
+};
+
+static int priv_op_insn_fetch(enum x86_segment seg,
+                              unsigned long offset,
+                              void *p_data,
+                              unsigned int bytes,
+                              struct x86_emulate_ctxt *ctxt)
+{
+    const struct priv_op_ctxt *poc =
+        container_of(ctxt, struct priv_op_ctxt, ctxt);
+    unsigned int rc;
+    unsigned long addr = poc->cs.base + offset;
+
+    ASSERT(seg == x86_seg_cs);
+
+    /* We don't mean to emulate any branches. */
+    if ( !bytes )
+        return X86EMUL_UNHANDLEABLE;
+
+    rc = pv_emul_virt_to_linear(poc->cs.base, offset, bytes, poc->cs.limit,
+                                x86_seg_cs, ctxt, &addr);
+    if ( rc != X86EMUL_OKAY )
+        return rc;
+
+    if ( (rc = __copy_from_user(p_data, (void *)addr, bytes)) != 0 )
+    {
+        /*
+         * TODO: This should report PFEC_insn_fetch when goc->insn_fetch &&
+         * cpu_has_nx, but we'd then need a "fetch" variant of
+         * __copy_from_user() respecting NX, SMEP, and protection keys.
+         */
+        x86_emul_pagefault(0, addr + bytes - rc, ctxt);
+        return X86EMUL_EXCEPTION;
+    }
+
+    return X86EMUL_OKAY;
+}
+
+static int priv_op_read_segment(enum x86_segment seg,
+                                struct segment_register *reg,
+                                struct x86_emulate_ctxt *ctxt)
+{
+    /* Check if this is an attempt to access the I/O bitmap. */
+    if ( seg == x86_seg_tr )
+    {
+        switch ( ctxt->opcode )
+        {
+        case 0x6c ... 0x6f: /* ins / outs */
+        case 0xe4 ... 0xe7: /* in / out (immediate port) */
+        case 0xec ... 0xef: /* in / out (port in %dx) */
+            /* Defer the check to priv_op_{read,write}_io(). */
+            return X86EMUL_DONE;
+        }
+    }
+
+    if ( ctxt->addr_size < 64 )
+    {
+        unsigned long limit;
+        unsigned int sel, ar;
+
+        switch ( seg )
+        {
+        case x86_seg_cs: sel = ctxt->regs->cs; break;
+        case x86_seg_ds: sel = read_sreg(ds);  break;
+        case x86_seg_es: sel = read_sreg(es);  break;
+        case x86_seg_fs: sel = read_sreg(fs);  break;
+        case x86_seg_gs: sel = read_sreg(gs);  break;
+        case x86_seg_ss: sel = ctxt->regs->ss; break;
+        default: return X86EMUL_UNHANDLEABLE;
+        }
+
+        if ( !read_descriptor(sel, current, &reg->base, &limit, &ar, 0) )
+            return X86EMUL_UNHANDLEABLE;
+
+        reg->limit = limit;
+        reg->attr.bytes = ar >> 8;
+    }
+    else
+    {
+        switch ( seg )
+        {
+        default:
+            if ( !is_x86_user_segment(seg) )
+                return X86EMUL_UNHANDLEABLE;
+            reg->base = 0;
+            break;
+        case x86_seg_fs:
+            reg->base = rdfsbase();
+            break;
+        case x86_seg_gs:
+            reg->base = rdgsbase();
+            break;
+        }
+
+        reg->limit = ~0U;
+
+        reg->attr.bytes = 0;
+        reg->attr.fields.type = _SEGMENT_WR >> 8;
+        if ( seg == x86_seg_cs )
+        {
+            reg->attr.fields.type |= _SEGMENT_CODE >> 8;
+            reg->attr.fields.l = 1;
+        }
+        else
+            reg->attr.fields.db = 1;
+        reg->attr.fields.s   = 1;
+        reg->attr.fields.dpl = 3;
+        reg->attr.fields.p   = 1;
+        reg->attr.fields.g   = 1;
+    }
+
+    /*
+     * For x86_emulate.c's mode_ring0() to work, fake a DPL of zero.
+     * Also do this for consistency for non-conforming code segments.
+     */
+    if ( (seg == x86_seg_ss ||
+          (seg == x86_seg_cs &&
+           !(reg->attr.fields.type & (_SEGMENT_EC >> 8)))) &&
+         guest_kernel_mode(current, ctxt->regs) )
+        reg->attr.fields.dpl = 0;
+
+    return X86EMUL_OKAY;
 }
 
 /* Perform IOPL check between the vcpu's shadowed IOPL, and the assumed cpl. */
@@ -2333,6 +2125,238 @@ unsigned long guest_to_host_gpr_switch(unsigned long);
 
 void (*pv_post_outb_hook)(unsigned int port, u8 value);
 
+typedef void io_emul_stub_t(struct cpu_user_regs *);
+
+static io_emul_stub_t *io_emul_stub_setup(struct priv_op_ctxt *ctxt, u8 opcode,
+                                          unsigned int port, unsigned int bytes)
+{
+    if ( !ctxt->io_emul_stub )
+        ctxt->io_emul_stub = map_domain_page(_mfn(this_cpu(stubs.mfn))) +
+                                             (this_cpu(stubs.addr) &
+                                              ~PAGE_MASK) +
+                                             STUB_BUF_SIZE / 2;
+
+    /* movq $host_to_guest_gpr_switch,%rcx */
+    ctxt->io_emul_stub[0] = 0x48;
+    ctxt->io_emul_stub[1] = 0xb9;
+    *(void **)&ctxt->io_emul_stub[2] = (void *)host_to_guest_gpr_switch;
+    /* callq *%rcx */
+    ctxt->io_emul_stub[10] = 0xff;
+    ctxt->io_emul_stub[11] = 0xd1;
+    /* data16 or nop */
+    ctxt->io_emul_stub[12] = (bytes != 2) ? 0x90 : 0x66;
+    /* <io-access opcode> */
+    ctxt->io_emul_stub[13] = opcode;
+    /* imm8 or nop */
+    ctxt->io_emul_stub[14] = !(opcode & 8) ? port : 0x90;
+    /* ret (jumps to guest_to_host_gpr_switch) */
+    ctxt->io_emul_stub[15] = 0xc3;
+    BUILD_BUG_ON(STUB_BUF_SIZE / 2 < 16);
+
+    if ( ioemul_handle_quirk )
+        ioemul_handle_quirk(opcode, &ctxt->io_emul_stub[12], ctxt->ctxt.regs);
+
+    /* Handy function-typed pointer to the stub. */
+    return (void *)(this_cpu(stubs.addr) + STUB_BUF_SIZE / 2);
+}
+
+static int priv_op_read_io(unsigned int port, unsigned int bytes,
+                           unsigned long *val, struct x86_emulate_ctxt *ctxt)
+{
+    struct priv_op_ctxt *poc = container_of(ctxt, struct priv_op_ctxt, ctxt);
+    struct vcpu *curr = current;
+    struct domain *currd = current->domain;
+
+    /* INS must not come here. */
+    ASSERT((ctxt->opcode & ~9) == 0xe4);
+
+    if ( !guest_io_okay(port, bytes, curr, ctxt->regs) )
+        return X86EMUL_UNHANDLEABLE;
+
+    poc->bpmatch = check_guest_io_breakpoint(curr, port, bytes);
+
+    if ( admin_io_okay(port, bytes, currd) )
+    {
+        io_emul_stub_t *io_emul =
+            io_emul_stub_setup(poc, ctxt->opcode, port, bytes);
+
+        mark_regs_dirty(ctxt->regs);
+        io_emul(ctxt->regs);
+        return X86EMUL_DONE;
+    }
+
+    *val = guest_io_read(port, bytes, currd);
+
+    return X86EMUL_OKAY;
+}
+
+static int priv_op_write_io(unsigned int port, unsigned int bytes,
+                            unsigned long val, struct x86_emulate_ctxt *ctxt)
+{
+    struct priv_op_ctxt *poc = container_of(ctxt, struct priv_op_ctxt, ctxt);
+    struct vcpu *curr = current;
+    struct domain *currd = current->domain;
+
+    /* OUTS must not come here. */
+    ASSERT((ctxt->opcode & ~9) == 0xe6);
+
+    if ( !guest_io_okay(port, bytes, curr, ctxt->regs) )
+        return X86EMUL_UNHANDLEABLE;
+
+    poc->bpmatch = check_guest_io_breakpoint(curr, port, bytes);
+
+    if ( admin_io_okay(port, bytes, currd) )
+    {
+        io_emul_stub_t *io_emul =
+            io_emul_stub_setup(poc, ctxt->opcode, port, bytes);
+
+        mark_regs_dirty(ctxt->regs);
+        io_emul(ctxt->regs);
+        if ( (bytes == 1) && pv_post_outb_hook )
+            pv_post_outb_hook(port, val);
+        return X86EMUL_DONE;
+    }
+
+    guest_io_write(port, bytes, val, currd);
+
+    return X86EMUL_OKAY;
+}
+
+static int priv_op_rep_ins(uint16_t port,
+                           enum x86_segment seg, unsigned long offset,
+                           unsigned int bytes_per_rep, unsigned long *reps,
+                           struct x86_emulate_ctxt *ctxt)
+{
+    struct priv_op_ctxt *poc = container_of(ctxt, struct priv_op_ctxt, ctxt);
+    struct vcpu *curr = current;
+    struct domain *currd = current->domain;
+    unsigned long goal = *reps;
+    struct segment_register sreg;
+    int rc;
+
+    ASSERT(seg == x86_seg_es);
+
+    *reps = 0;
+
+    if ( !guest_io_okay(port, bytes_per_rep, curr, ctxt->regs) )
+        return X86EMUL_UNHANDLEABLE;
+
+    rc = priv_op_read_segment(x86_seg_es, &sreg, ctxt);
+    if ( rc != X86EMUL_OKAY )
+        return rc;
+
+    if ( !sreg.attr.fields.p )
+        return X86EMUL_UNHANDLEABLE;
+    if ( !sreg.attr.fields.s ||
+         (sreg.attr.fields.type & (_SEGMENT_CODE >> 8)) ||
+         !(sreg.attr.fields.type & (_SEGMENT_WR >> 8)) )
+    {
+        x86_emul_hw_exception(TRAP_gp_fault, 0, ctxt);
+        return X86EMUL_EXCEPTION;
+    }
+
+    poc->bpmatch = check_guest_io_breakpoint(curr, port, bytes_per_rep);
+
+    while ( *reps < goal )
+    {
+        unsigned int data = guest_io_read(port, bytes_per_rep, currd);
+        unsigned long addr;
+
+        rc = pv_emul_virt_to_linear(sreg.base, offset, bytes_per_rep,
+                                    sreg.limit, x86_seg_es, ctxt, &addr);
+        if ( rc != X86EMUL_OKAY )
+            return rc;
+
+        if ( (rc = __copy_to_user((void *)addr, &data, bytes_per_rep)) != 0 )
+        {
+            x86_emul_pagefault(PFEC_write_access,
+                               addr + bytes_per_rep - rc, ctxt);
+            return X86EMUL_EXCEPTION;
+        }
+
+        ++*reps;
+
+        if ( poc->bpmatch || hypercall_preempt_check() )
+            break;
+
+        /* x86_emulate() clips the repetition count to ensure we don't wrap. */
+        if ( unlikely(ctxt->regs->_eflags & X86_EFLAGS_DF) )
+            offset -= bytes_per_rep;
+        else
+            offset += bytes_per_rep;
+    }
+
+    return X86EMUL_OKAY;
+}
+
+static int priv_op_rep_outs(enum x86_segment seg, unsigned long offset,
+                            uint16_t port,
+                            unsigned int bytes_per_rep, unsigned long *reps,
+                            struct x86_emulate_ctxt *ctxt)
+{
+    struct priv_op_ctxt *poc = container_of(ctxt, struct priv_op_ctxt, ctxt);
+    struct vcpu *curr = current;
+    struct domain *currd = current->domain;
+    unsigned long goal = *reps;
+    struct segment_register sreg;
+    int rc;
+
+    *reps = 0;
+
+    if ( !guest_io_okay(port, bytes_per_rep, curr, ctxt->regs) )
+        return X86EMUL_UNHANDLEABLE;
+
+    rc = priv_op_read_segment(seg, &sreg, ctxt);
+    if ( rc != X86EMUL_OKAY )
+        return rc;
+
+    if ( !sreg.attr.fields.p )
+        return X86EMUL_UNHANDLEABLE;
+    if ( !sreg.attr.fields.s ||
+         ((sreg.attr.fields.type & (_SEGMENT_CODE >> 8)) &&
+          !(sreg.attr.fields.type & (_SEGMENT_WR >> 8))) )
+    {
+        x86_emul_hw_exception(seg != x86_seg_ss ? TRAP_gp_fault
+                                                : TRAP_stack_error,
+                              0, ctxt);
+        return X86EMUL_EXCEPTION;
+    }
+
+    poc->bpmatch = check_guest_io_breakpoint(curr, port, bytes_per_rep);
+
+    while ( *reps < goal )
+    {
+        unsigned int data = 0;
+        unsigned long addr;
+
+        rc = pv_emul_virt_to_linear(sreg.base, offset, bytes_per_rep,
+                                    sreg.limit, seg, ctxt, &addr);
+        if ( rc != X86EMUL_OKAY )
+            return rc;
+
+        if ( (rc = __copy_from_user(&data, (void *)addr, bytes_per_rep)) != 0 )
+        {
+            x86_emul_pagefault(0, addr + bytes_per_rep - rc, ctxt);
+            return X86EMUL_EXCEPTION;
+        }
+
+        guest_io_write(port, bytes_per_rep, data, currd);
+
+        ++*reps;
+
+        if ( poc->bpmatch || hypercall_preempt_check() )
+            break;
+
+        /* x86_emulate() clips the repetition count to ensure we don't wrap. */
+        if ( unlikely(ctxt->regs->_eflags & X86_EFLAGS_DF) )
+            offset -= bytes_per_rep;
+        else
+            offset += bytes_per_rep;
+    }
+
+    return X86EMUL_OKAY;
+}
+
 static int priv_op_read_cr(unsigned int reg, unsigned long *val,
                            struct x86_emulate_ctxt *ctxt)
 {
@@ -2473,6 +2497,7 @@ static inline bool is_cpufreq_controller(const struct domain *d)
 static int priv_op_read_msr(unsigned int reg, uint64_t *val,
                             struct x86_emulate_ctxt *ctxt)
 {
+    struct priv_op_ctxt *poc = container_of(ctxt, struct priv_op_ctxt, ctxt);
     const struct vcpu *curr = current;
     const struct domain *currd = curr->domain;
     bool vpmu_msr = false;
@@ -2498,6 +2523,28 @@ static int priv_op_read_msr(unsigned int reg, uint64_t *val,
         if ( is_pv_32bit_domain(currd) )
             break;
         *val = curr->arch.pv_vcpu.gs_base_user;
+        return X86EMUL_OKAY;
+
+    /*
+     * In order to fully retain original behavior, defer calling
+     * pv_soft_rdtsc() until after emulation. This may want/need to be
+     * reconsidered.
+     */
+    case MSR_IA32_TSC:
+        poc->tsc |= TSC_BASE;
+        goto normal;
+
+    case MSR_TSC_AUX:
+        poc->tsc |= TSC_AUX;
+        if ( cpu_has_rdtscp )
+            goto normal;
+        *val = 0;
+        return X86EMUL_OKAY;
+
+    case MSR_EFER:
+        *val = read_efer();
+        if ( is_pv_32bit_domain(currd) )
+            *val &= ~(EFER_LME | EFER_LMA | EFER_LMSLE);
         return X86EMUL_OKAY;
 
     case MSR_K7_FID_VID_CTL:
@@ -2599,7 +2646,6 @@ static int priv_op_read_msr(unsigned int reg, uint64_t *val,
         if ( rc )
             return X86EMUL_OKAY;
         /* fall through */
-    case MSR_EFER:
     normal:
         /* Everyone can read the MSR space. */
         /* gdprintk(XENLOG_WARNING, "Domain attempted RDMSR %08x\n", reg); */
@@ -2821,515 +2867,192 @@ static int priv_op_write_msr(unsigned int reg, uint64_t val,
     return X86EMUL_UNHANDLEABLE;
 }
 
-int pv_emul_cpuid(unsigned int *eax, unsigned int *ebx, unsigned int *ecx,
-                  unsigned int *edx, struct x86_emulate_ctxt *ctxt)
+static int priv_op_wbinvd(struct x86_emulate_ctxt *ctxt)
 {
-    struct cpu_user_regs regs = *ctxt->regs;
-
-    regs._eax = *eax;
-    regs._ecx = *ecx;
-
-    pv_cpuid(&regs);
-
-    *eax = regs._eax;
-    *ebx = regs._ebx;
-    *ecx = regs._ecx;
-    *edx = regs._edx;
+    /* Ignore the instruction if unprivileged. */
+    if ( !cache_flush_permitted(current->domain) )
+        /*
+         * Non-physdev domain attempted WBINVD; ignore for now since
+         * newer linux uses this in some start-of-day timing loops.
+         */
+        ;
+    else
+        wbinvd();
 
     return X86EMUL_OKAY;
 }
 
-/* Instruction fetch with error handling. */
-#define insn_fetch(type, base, eip, limit)                                  \
-({  unsigned long _rc, _ptr = (base) + (eip);                               \
-    type _x;                                                                \
-    if ( ad_default < 8 )                                                   \
-        _ptr = (unsigned int)_ptr;                                          \
-    if ( (limit) < sizeof(_x) - 1 || (eip) > (limit) - (sizeof(_x) - 1) )   \
-        goto fail;                                                          \
-    if ( (_rc = copy_from_user(&_x, (type *)_ptr, sizeof(_x))) != 0 )       \
-    {                                                                       \
-        pv_inject_page_fault(0, _ptr + sizeof(_x) - _rc);                   \
-        goto skip;                                                          \
-    }                                                                       \
-    (eip) += sizeof(_x); _x; })
-
-static int emulate_privileged_op(struct cpu_user_regs *regs)
+int pv_emul_cpuid(uint32_t leaf, uint32_t subleaf,
+                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt)
 {
-    struct vcpu *v = current;
-    struct domain *currd = v->domain;
-    unsigned long *reg, eip = regs->eip;
-    u8 opcode, modrm_reg = 0, modrm_rm = 0, rep_prefix = 0, lock = 0, rex = 0;
-    enum { lm_seg_none, lm_seg_fs, lm_seg_gs } lm_ovr = lm_seg_none;
-    int rc;
-    unsigned int port, i, data_sel, ar, data, bpmatch = 0;
-    unsigned int op_bytes, op_default, ad_bytes, ad_default, opsize_prefix= 0;
-#define rd_ad(reg) (ad_bytes >= sizeof(regs->reg) \
-                    ? regs->reg \
-                    : ad_bytes == 4 \
-                      ? (u32)regs->reg \
-                      : (u16)regs->reg)
-#define wr_ad(reg, val) (ad_bytes >= sizeof(regs->reg) \
-                         ? regs->reg = (val) \
-                         : ad_bytes == 4 \
-                           ? (*(u32 *)&regs->reg = (val)) \
-                           : (*(u16 *)&regs->reg = (val)))
-    unsigned long code_base, code_limit;
-    char *io_emul_stub = NULL;
-    void (*io_emul)(struct cpu_user_regs *);
-    uint64_t val;
-
-    if ( !read_descriptor(regs->cs, v, &code_base, &code_limit, &ar, 1) )
-        goto fail;
-    op_default = op_bytes = (ar & (_SEGMENT_L|_SEGMENT_DB)) ? 4 : 2;
-    ad_default = ad_bytes = (ar & _SEGMENT_L) ? 8 : op_default;
-    if ( !(ar & _SEGMENT_S) ||
-         !(ar & _SEGMENT_P) ||
-         !(ar & _SEGMENT_CODE) )
-        goto fail;
-
-    /* emulating only opcodes not allowing SS to be default */
-    data_sel = read_sreg(ds);
-
-    /* Legacy prefixes. */
-    for ( i = 0; i < 8; i++, rex == opcode || (rex = 0) )
-    {
-        switch ( opcode = insn_fetch(u8, code_base, eip, code_limit) )
-        {
-        case 0x66: /* operand-size override */
-            opsize_prefix = 1;
-            op_bytes = op_default ^ 6; /* switch between 2/4 bytes */
-            continue;
-        case 0x67: /* address-size override */
-            ad_bytes = ad_default != 4 ? 4 : 2; /* switch to 2/4 bytes */
-            continue;
-        case 0x2e: /* CS override */
-            data_sel = regs->cs;
-            continue;
-        case 0x3e: /* DS override */
-            data_sel = read_sreg(ds);
-            continue;
-        case 0x26: /* ES override */
-            data_sel = read_sreg(es);
-            continue;
-        case 0x64: /* FS override */
-            data_sel = read_sreg(fs);
-            lm_ovr = lm_seg_fs;
-            continue;
-        case 0x65: /* GS override */
-            data_sel = read_sreg(gs);
-            lm_ovr = lm_seg_gs;
-            continue;
-        case 0x36: /* SS override */
-            data_sel = regs->ss;
-            continue;
-        case 0xf0: /* LOCK */
-            lock = 1;
-            continue;
-        case 0xf2: /* REPNE/REPNZ */
-        case 0xf3: /* REP/REPE/REPZ */
-            rep_prefix = 1;
-            continue;
-        default:
-            if ( (ar & _SEGMENT_L) && (opcode & 0xf0) == 0x40 )
-            {
-                rex = opcode;
-                continue;
-            }
-            break;
-        }
-        break;
-    }
-
-    /* REX prefix. */
-    if ( rex & 8 ) /* REX.W */
-        op_bytes = 4; /* emulate only opcodes not supporting 64-bit operands */
-    modrm_reg = (rex & 4) << 1;  /* REX.R */
-    /* REX.X does not need to be decoded. */
-    modrm_rm  = (rex & 1) << 3;  /* REX.B */
-
-    if ( opcode == 0x0f )
-        goto twobyte_opcode;
-    
-    if ( lock )
-        goto fail;
-
-    /* Input/Output String instructions. */
-    if ( (opcode >= 0x6c) && (opcode <= 0x6f) )
-    {
-        unsigned long data_base, data_limit;
-
-        if ( rep_prefix && (rd_ad(ecx) == 0) )
-            goto done;
-
-        if ( !(opcode & 2) )
-        {
-            data_sel = read_sreg(es);
-            lm_ovr = lm_seg_none;
-        }
-
-        if ( !(ar & _SEGMENT_L) )
-        {
-            if ( !read_descriptor(data_sel, v, &data_base, &data_limit,
-                                  &ar, 0) )
-                goto fail;
-            if ( !(ar & _SEGMENT_S) ||
-                 !(ar & _SEGMENT_P) ||
-                 (opcode & 2 ?
-                  (ar & _SEGMENT_CODE) && !(ar & _SEGMENT_WR) :
-                  (ar & _SEGMENT_CODE) || !(ar & _SEGMENT_WR)) )
-                goto fail;
-        }
-        else
-        {
-            switch ( lm_ovr )
-            {
-            default:
-                data_base = 0UL;
-                break;
-            case lm_seg_fs:
-                data_base = rdfsbase();
-                break;
-            case lm_seg_gs:
-                data_base = rdgsbase();
-                break;
-            }
-            data_limit = ~0UL;
-            ar = _SEGMENT_WR|_SEGMENT_S|_SEGMENT_DPL|_SEGMENT_P;
-        }
-
-        port = (u16)regs->edx;
-
-    continue_io_string:
-        switch ( opcode )
-        {
-        case 0x6c: /* INSB */
-            op_bytes = 1;
-        case 0x6d: /* INSW/INSL */
-            if ( (data_limit < (op_bytes - 1)) ||
-                 (rd_ad(edi) > (data_limit - (op_bytes - 1))) ||
-                 !guest_io_okay(port, op_bytes, v, regs) )
-                goto fail;
-            data = guest_io_read(port, op_bytes, currd);
-            if ( (rc = copy_to_user((void *)data_base + rd_ad(edi),
-                                    &data, op_bytes)) != 0 )
-            {
-                pv_inject_page_fault(PFEC_write_access,
-                                     data_base + rd_ad(edi) + op_bytes - rc);
-                return EXCRET_fault_fixed;
-            }
-            wr_ad(edi, regs->edi + (int)((regs->eflags & X86_EFLAGS_DF)
-                                         ? -op_bytes : op_bytes));
-            break;
-
-        case 0x6e: /* OUTSB */
-            op_bytes = 1;
-        case 0x6f: /* OUTSW/OUTSL */
-            if ( (data_limit < (op_bytes - 1)) ||
-                 (rd_ad(esi) > (data_limit - (op_bytes - 1))) ||
-                  !guest_io_okay(port, op_bytes, v, regs) )
-                goto fail;
-            if ( (rc = copy_from_user(&data, (void *)data_base + rd_ad(esi),
-                                      op_bytes)) != 0 )
-            {
-                pv_inject_page_fault(0, data_base + rd_ad(esi)
-                                     + op_bytes - rc);
-                return EXCRET_fault_fixed;
-            }
-            guest_io_write(port, op_bytes, data, currd);
-            wr_ad(esi, regs->esi + (int)((regs->eflags & X86_EFLAGS_DF)
-                                         ? -op_bytes : op_bytes));
-            break;
-        }
-
-        bpmatch = check_guest_io_breakpoint(v, port, op_bytes);
-
-        if ( rep_prefix && (wr_ad(ecx, regs->ecx - 1) != 0) )
-        {
-            if ( !bpmatch && !hypercall_preempt_check() )
-                goto continue_io_string;
-            eip = regs->eip;
-        }
-
-        goto done;
-    }
+    const struct vcpu *curr = current;
 
     /*
-     * Very likely to be an I/O instruction (IN/OUT).
-     * Build an stub to execute the instruction with full guest GPR
-     * context. This is needed for some systems which (ab)use IN/OUT
-     * to communicate with BIOS code in system-management mode.
+     * x86_emulate uses this function to query CPU features for its own
+     * internal use. Make sure we're actually emulating CPUID before checking
+     * for emulated CPUID faulting.
      */
-    io_emul_stub = map_domain_page(_mfn(this_cpu(stubs.mfn))) +
-                   (this_cpu(stubs.addr) & ~PAGE_MASK) +
-                   STUB_BUF_SIZE / 2;
-    /* movq $host_to_guest_gpr_switch,%rcx */
-    io_emul_stub[0] = 0x48;
-    io_emul_stub[1] = 0xb9;
-    *(void **)&io_emul_stub[2] = (void *)host_to_guest_gpr_switch;
-    /* callq *%rcx */
-    io_emul_stub[10] = 0xff;
-    io_emul_stub[11] = 0xd1;
-    /* data16 or nop */
-    io_emul_stub[12] = (op_bytes != 2) ? 0x90 : 0x66;
-    /* <io-access opcode> */
-    io_emul_stub[13] = opcode;
-    /* imm8 or nop */
-    io_emul_stub[14] = 0x90;
-    /* ret (jumps to guest_to_host_gpr_switch) */
-    io_emul_stub[15] = 0xc3;
-    BUILD_BUG_ON(STUB_BUF_SIZE / 2 < 16);
-
-    /* Handy function-typed pointer to the stub. */
-    io_emul = (void *)(this_cpu(stubs.addr) + STUB_BUF_SIZE / 2);
-
-    if ( ioemul_handle_quirk )
-        ioemul_handle_quirk(opcode, &io_emul_stub[12], regs);
-
-    /* I/O Port and Interrupt Flag instructions. */
-    switch ( opcode )
+    if ( ctxt->opcode == X86EMUL_OPC(0x0f, 0xa2) )
     {
-    case 0xe4: /* IN imm8,%al */
-        op_bytes = 1;
-    case 0xe5: /* IN imm8,%eax */
-        port = insn_fetch(u8, code_base, eip, code_limit);
-        io_emul_stub[14] = port; /* imm8 */
-    exec_in:
-        if ( !guest_io_okay(port, op_bytes, v, regs) )
-            goto fail;
-        if ( admin_io_okay(port, op_bytes, currd) )
-        {
-            mark_regs_dirty(regs);
-            io_emul(regs);            
-        }
-        else
-        {
-            if ( op_bytes == 4 )
-                regs->eax = 0;
-            else
-                regs->eax &= ~((1 << (op_bytes * 8)) - 1);
-            regs->eax |= guest_io_read(port, op_bytes, currd);
-        }
-        bpmatch = check_guest_io_breakpoint(v, port, op_bytes);
-        goto done;
 
-    case 0xec: /* IN %dx,%al */
-        op_bytes = 1;
-    case 0xed: /* IN %dx,%eax */
-        port = (u16)regs->edx;
-        goto exec_in;
+        /* If cpuid faulting is enabled and CPL>0 leave the #GP untouched. */
+        if ( curr->arch.cpuid_faulting &&
+             !guest_kernel_mode(curr, ctxt->regs) )
+            return X86EMUL_EXCEPTION;
+    }
 
-    case 0xe6: /* OUT %al,imm8 */
-        op_bytes = 1;
-    case 0xe7: /* OUT %eax,imm8 */
-        port = insn_fetch(u8, code_base, eip, code_limit);
-        io_emul_stub[14] = port; /* imm8 */
-    exec_out:
-        if ( !guest_io_okay(port, op_bytes, v, regs) )
-            goto fail;
-        if ( admin_io_okay(port, op_bytes, currd) )
-        {
-            mark_regs_dirty(regs);
-            io_emul(regs);            
-            if ( (op_bytes == 1) && pv_post_outb_hook )
-                pv_post_outb_hook(port, regs->eax);
-        }
-        else
-        {
-            guest_io_write(port, op_bytes, regs->eax, currd);
-        }
-        bpmatch = check_guest_io_breakpoint(v, port, op_bytes);
-        goto done;
+    guest_cpuid(curr, leaf, subleaf, res);
 
-    case 0xee: /* OUT %al,%dx */
-        op_bytes = 1;
-    case 0xef: /* OUT %eax,%dx */
-        port = (u16)regs->edx;
-        goto exec_out;
+    return X86EMUL_OKAY;
+}
 
-    case 0xfa: /* CLI */
-    case 0xfb: /* STI */
-        if ( !iopl_ok(v, regs) )
-            goto fail;
+static int priv_op_validate(const struct x86_emulate_state *state,
+                            struct x86_emulate_ctxt *ctxt)
+{
+    switch ( ctxt->opcode )
+    {
+    case 0x6c ... 0x6f: /* ins / outs */
+    case 0xe4 ... 0xe7: /* in / out (immediate port) */
+    case 0xec ... 0xef: /* in / out (port in %dx) */
+    case X86EMUL_OPC(0x0f, 0x06): /* clts */
+    case X86EMUL_OPC(0x0f, 0x09): /* wbinvd */
+    case X86EMUL_OPC(0x0f, 0x20) ...
+         X86EMUL_OPC(0x0f, 0x23): /* mov to/from cr/dr */
+    case X86EMUL_OPC(0x0f, 0x30): /* wrmsr */
+    case X86EMUL_OPC(0x0f, 0x31): /* rdtsc */
+    case X86EMUL_OPC(0x0f, 0x32): /* rdmsr */
+    case X86EMUL_OPC(0x0f, 0xa2): /* cpuid */
+        return X86EMUL_OKAY;
+
+    case 0xfa: case 0xfb: /* cli / sti */
+        if ( !iopl_ok(current, ctxt->regs) )
+            break;
         /*
          * This is just too dangerous to allow, in my opinion. Consider if the
          * caller then tries to reenable interrupts using POPF: we can't trap
          * that and we'll end up with hard-to-debug lockups. Fast & loose will
          * do for us. :-)
+        vcpu_info(current, evtchn_upcall_mask) = (ctxt->opcode == 0xfa);
          */
-        /*v->vcpu_info->evtchn_upcall_mask = (opcode == 0xfa);*/
-        goto done;
-    }
+        return X86EMUL_DONE;
 
-    /* No decode of this single-byte opcode. */
-    goto fail;
-
- twobyte_opcode:
-    /*
-     * All 2 and 3 byte opcodes, except RDTSC (0x31), RDTSCP (0x1,0xF9),
-     * and CPUID (0xa2), are executable only from guest kernel mode 
-     * (virtual ring 0).
-     */
-    opcode = insn_fetch(u8, code_base, eip, code_limit);
-    if ( !guest_kernel_mode(v, regs) && 
-        (opcode != 0x1) && (opcode != 0x31) && (opcode != 0xa2) )
-        goto fail;
-
-    if ( lock && (opcode & ~3) != 0x20 )
-        goto fail;
-    switch ( opcode )
+    case X86EMUL_OPC(0x0f, 0x01):
     {
-    case 0x1: /* RDTSCP and XSETBV */
-        switch ( insn_fetch(u8, code_base, eip, code_limit) )
-        {
-        case 0xf9: /* RDTSCP */
-            if ( (v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_TSD) &&
-                 !guest_kernel_mode(v, regs) )
-                goto fail;
-            pv_soft_rdtsc(v, regs, 1);
+        unsigned int modrm_rm, modrm_reg;
+
+        if ( x86_insn_modrm(state, &modrm_rm, &modrm_reg) != 3 ||
+             (modrm_rm & 7) != 1 )
             break;
-        case 0xd1: /* XSETBV */
+        switch ( modrm_reg & 7 )
         {
-            u64 new_xfeature = (u32)regs->eax | ((u64)regs->edx << 32);
-
-            if ( lock || rep_prefix || opsize_prefix
-                 || !(v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE) )
-            {
-                do_guest_trap(TRAP_invalid_op, regs);
-                goto skip;
-            }
-
-            if ( !guest_kernel_mode(v, regs) )
-                goto fail;
-
-            if ( handle_xsetbv(regs->ecx, new_xfeature) )
-                goto fail;
-
-            break;
+        case 2: /* xsetbv */
+        case 7: /* rdtscp */
+            return X86EMUL_OKAY;
         }
-        default:
-            goto fail;
-        }
-        break;
-
-    case 0x06: /* CLTS */
-        (void)do_fpu_taskswitch(0);
-        break;
-
-    case 0x09: /* WBINVD */
-        /* Ignore the instruction if unprivileged. */
-        if ( !cache_flush_permitted(currd) )
-            /* Non-physdev domain attempted WBINVD; ignore for now since
-               newer linux uses this in some start-of-day timing loops */
-            ;
-        else
-            wbinvd();
-        break;
-
-    case 0x20: /* MOV CR?,<reg> */
-        opcode = insn_fetch(u8, code_base, eip, code_limit);
-        if ( opcode < 0xc0 )
-            goto fail;
-        modrm_reg += ((opcode >> 3) & 7) + (lock << 3);
-        modrm_rm  |= (opcode >> 0) & 7;
-        if ( priv_op_read_cr(modrm_reg, decode_register(modrm_rm, regs, 0),
-                             NULL) != X86EMUL_OKAY )
-            goto fail;
-        break;
-
-    case 0x21: /* MOV DR?,<reg> */ {
-        opcode = insn_fetch(u8, code_base, eip, code_limit);
-        if ( opcode < 0xc0 )
-            goto fail;
-        modrm_reg += ((opcode >> 3) & 7) + (lock << 3);
-        modrm_rm  |= (opcode >> 0) & 7;
-        if ( priv_op_read_dr(modrm_reg, decode_register(modrm_rm, regs, 0),
-                             NULL) != X86EMUL_OKAY )
-            goto fail;
         break;
     }
-
-    case 0x22: /* MOV <reg>,CR? */
-        opcode = insn_fetch(u8, code_base, eip, code_limit);
-        if ( opcode < 0xc0 )
-            goto fail;
-        modrm_reg += ((opcode >> 3) & 7) + (lock << 3);
-        modrm_rm  |= (opcode >> 0) & 7;
-        reg = decode_register(modrm_rm, regs, 0);
-        switch ( priv_op_write_cr(modrm_reg, *reg, NULL) )
-        {
-        case X86EMUL_OKAY:
-            break;
-        case X86EMUL_RETRY: /* retry after preemption */
-            goto skip;
-        default:
-            goto fail;
-        }
-        break;
-
-    case 0x23: /* MOV <reg>,DR? */
-        opcode = insn_fetch(u8, code_base, eip, code_limit);
-        if ( opcode < 0xc0 )
-            goto fail;
-        modrm_reg += ((opcode >> 3) & 7) + (lock << 3);
-        modrm_rm  |= (opcode >> 0) & 7;
-        reg = decode_register(modrm_rm, regs, 0);
-        if ( priv_op_write_dr(modrm_reg, *reg, NULL) != X86EMUL_OKAY )
-            goto fail;
-        break;
-
-    case 0x30: /* WRMSR */
-        if ( priv_op_write_msr(regs->_ecx, (regs->rdx << 32) | regs->_eax,
-                               NULL) != X86EMUL_OKAY )
-            goto fail;
-        break;
-
-    case 0x31: /* RDTSC */
-        if ( (v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_TSD) &&
-             !guest_kernel_mode(v, regs) )
-            goto fail;
-        if ( currd->arch.vtsc )
-            pv_soft_rdtsc(v, regs, 0);
-        else
-        {
-            val = rdtsc();
-            goto rdmsr_writeback;
-        }
-        break;
-
-    case 0x32: /* RDMSR */
-        if ( priv_op_read_msr(regs->_ecx, &val, NULL) != X86EMUL_OKAY )
-            goto fail;
- rdmsr_writeback:
-        regs->eax = (uint32_t)val;
-        regs->edx = (uint32_t)(val >> 32);
-        break;
-
-    case 0xa2: /* CPUID */
-        /* If cpuid faulting is enabled and CPL>0 leave the #GP untouched. */
-        if ( v->arch.cpuid_faulting && !guest_kernel_mode(v, regs) )
-            goto fail;
-
-        pv_cpuid(regs);
-        break;
-
-    default:
-        goto fail;
     }
 
-#undef wr_ad
-#undef rd_ad
+    return X86EMUL_UNHANDLEABLE;
+}
 
- done:
-    instruction_done(regs, eip, bpmatch);
- skip:
-    if ( io_emul_stub )
-        unmap_domain_page(io_emul_stub);
-    return EXCRET_fault_fixed;
+static const struct x86_emulate_ops priv_op_ops = {
+    .insn_fetch          = priv_op_insn_fetch,
+    .read                = x86emul_unhandleable_rw,
+    .validate            = priv_op_validate,
+    .read_io             = priv_op_read_io,
+    .write_io            = priv_op_write_io,
+    .rep_ins             = priv_op_rep_ins,
+    .rep_outs            = priv_op_rep_outs,
+    .read_segment        = priv_op_read_segment,
+    .read_cr             = priv_op_read_cr,
+    .write_cr            = priv_op_write_cr,
+    .read_dr             = priv_op_read_dr,
+    .write_dr            = priv_op_write_dr,
+    .read_msr            = priv_op_read_msr,
+    .write_msr           = priv_op_write_msr,
+    .cpuid               = pv_emul_cpuid,
+    .wbinvd              = priv_op_wbinvd,
+};
 
- fail:
-    if ( io_emul_stub )
-        unmap_domain_page(io_emul_stub);
+static int emulate_privileged_op(struct cpu_user_regs *regs)
+{
+    struct vcpu *curr = current;
+    struct domain *currd = curr->domain;
+    struct priv_op_ctxt ctxt = {
+        .ctxt.regs = regs,
+        .ctxt.vendor = currd->arch.cpuid->x86_vendor,
+    };
+    int rc;
+    unsigned int eflags, ar;
+
+    if ( !read_descriptor(regs->cs, curr, &ctxt.cs.base, &ctxt.cs.limit,
+                          &ar, 1) ||
+         !(ar & _SEGMENT_S) ||
+         !(ar & _SEGMENT_P) ||
+         !(ar & _SEGMENT_CODE) )
+        return 0;
+
+    /* Mirror virtualized state into EFLAGS. */
+    ASSERT(regs->_eflags & X86_EFLAGS_IF);
+    if ( vcpu_info(curr, evtchn_upcall_mask) )
+        regs->_eflags &= ~X86_EFLAGS_IF;
+    else
+        regs->_eflags |= X86_EFLAGS_IF;
+    ASSERT(!(regs->_eflags & X86_EFLAGS_IOPL));
+    regs->_eflags |= curr->arch.pv_vcpu.iopl;
+    eflags = regs->_eflags;
+
+    ctxt.ctxt.addr_size = ar & _SEGMENT_L ? 64 : ar & _SEGMENT_DB ? 32 : 16;
+    /* Leave zero in ctxt.ctxt.sp_size, as it's not needed. */
+    rc = x86_emulate(&ctxt.ctxt, &priv_op_ops);
+
+    if ( ctxt.io_emul_stub )
+        unmap_domain_page(ctxt.io_emul_stub);
+
+    /*
+     * Un-mirror virtualized state from EFLAGS.
+     * Nothing we allow to be emulated can change anything other than the
+     * arithmetic bits, and the resume flag.
+     */
+    ASSERT(!((regs->_eflags ^ eflags) &
+             ~(X86_EFLAGS_RF | X86_EFLAGS_ARITH_MASK)));
+    regs->_eflags |= X86_EFLAGS_IF;
+    regs->_eflags &= ~X86_EFLAGS_IOPL;
+
+    /* More strict than x86_emulate_wrapper(). */
+    ASSERT(ctxt.ctxt.event_pending == (rc == X86EMUL_EXCEPTION));
+
+    switch ( rc )
+    {
+    case X86EMUL_OKAY:
+        if ( ctxt.tsc & TSC_BASE )
+        {
+            if ( ctxt.tsc & TSC_AUX )
+                pv_soft_rdtsc(curr, regs, 1);
+            else if ( currd->arch.vtsc )
+                pv_soft_rdtsc(curr, regs, 0);
+            else
+                msr_split(regs, rdtsc());
+        }
+
+        if ( ctxt.ctxt.retire.singlestep )
+            ctxt.bpmatch |= DR_STEP;
+        if ( ctxt.bpmatch )
+        {
+            curr->arch.debugreg[6] |= ctxt.bpmatch | DR_STATUS_RESERVED_ONE;
+            if ( !(curr->arch.pv_vcpu.trap_bounce.flags & TBF_EXCEPTION) )
+                do_guest_trap(TRAP_debug, regs);
+        }
+        /* fall through */
+    case X86EMUL_RETRY:
+        return EXCRET_fault_fixed;
+
+    case X86EMUL_EXCEPTION:
+        pv_inject_event(&ctxt.ctxt.event);
+        return EXCRET_fault_fixed;
+    }
+
     return 0;
 }
 
@@ -3340,13 +3063,94 @@ static inline int check_stack_limit(unsigned int ar, unsigned int limit,
             (!(ar & _SEGMENT_EC) ? (esp - 1) <= limit : (esp - decr) > limit));
 }
 
+struct gate_op_ctxt {
+    struct x86_emulate_ctxt ctxt;
+    struct {
+        unsigned long base, limit;
+    } cs;
+    bool insn_fetch;
+};
+
+static int gate_op_read(
+    enum x86_segment seg,
+    unsigned long offset,
+    void *p_data,
+    unsigned int bytes,
+    struct x86_emulate_ctxt *ctxt)
+{
+    const struct gate_op_ctxt *goc =
+        container_of(ctxt, struct gate_op_ctxt, ctxt);
+    unsigned int rc = bytes, sel = 0;
+    unsigned long addr = offset, limit = 0;
+
+    switch ( seg )
+    {
+    case x86_seg_cs:
+        addr += goc->cs.base;
+        limit = goc->cs.limit;
+        break;
+    case x86_seg_ds:
+        sel = read_sreg(ds);
+        break;
+    case x86_seg_es:
+        sel = read_sreg(es);
+        break;
+    case x86_seg_fs:
+        sel = read_sreg(fs);
+        break;
+    case x86_seg_gs:
+        sel = read_sreg(gs);
+        break;
+    case x86_seg_ss:
+        sel = ctxt->regs->ss;
+        break;
+    default:
+        return X86EMUL_UNHANDLEABLE;
+    }
+    if ( sel )
+    {
+        unsigned int ar;
+
+        ASSERT(!goc->insn_fetch);
+        if ( !read_descriptor(sel, current, &addr, &limit, &ar, 0) ||
+             !(ar & _SEGMENT_S) ||
+             !(ar & _SEGMENT_P) ||
+             ((ar & _SEGMENT_CODE) && !(ar & _SEGMENT_WR)) )
+            return X86EMUL_UNHANDLEABLE;
+        addr += offset;
+    }
+    else if ( seg != x86_seg_cs )
+        return X86EMUL_UNHANDLEABLE;
+
+    /* We don't mean to emulate any branches. */
+    if ( limit < bytes - 1 || offset > limit - bytes + 1 )
+        return X86EMUL_UNHANDLEABLE;
+
+    addr = (uint32_t)addr;
+
+    if ( (rc = __copy_from_user(p_data, (void *)addr, bytes)) )
+    {
+        /*
+         * TODO: This should report PFEC_insn_fetch when goc->insn_fetch &&
+         * cpu_has_nx, but we'd then need a "fetch" variant of
+         * __copy_from_user() respecting NX, SMEP, and protection keys.
+         */
+        x86_emul_pagefault(0, addr + bytes - rc, ctxt);
+        return X86EMUL_EXCEPTION;
+    }
+
+    return X86EMUL_OKAY;
+}
+
 static void emulate_gate_op(struct cpu_user_regs *regs)
 {
     struct vcpu *v = current;
-    unsigned int sel, ar, dpl, nparm, opnd_sel;
-    unsigned int op_default, op_bytes, ad_default, ad_bytes;
-    unsigned long off, eip, opnd_off, base, limit;
-    int jump;
+    unsigned int sel, ar, dpl, nparm, insn_len;
+    struct gate_op_ctxt ctxt = { .ctxt.regs = regs, .insn_fetch = true };
+    struct x86_emulate_state *state;
+    unsigned long off, base, limit;
+    uint16_t opnd_sel = 0;
+    int jump = -1, rc = X86EMUL_OKAY;
 
     /* Check whether this fault is due to the use of a call gate. */
     if ( !read_gate_descriptor(regs->error_code, v, &sel, &off, &ar) ||
@@ -3368,7 +3172,8 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
      * Decode instruction (and perhaps operand) to determine RPL,
      * whether this is a jump or a call, and the call return offset.
      */
-    if ( !read_descriptor(regs->cs, v, &base, &limit, &ar, 0) ||
+    if ( !read_descriptor(regs->cs, v, &ctxt.cs.base, &ctxt.cs.limit,
+                          &ar, 0) ||
          !(ar & _SEGMENT_S) ||
          !(ar & _SEGMENT_P) ||
          !(ar & _SEGMENT_CODE) )
@@ -3377,179 +3182,73 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
         return;
     }
 
-    op_bytes = op_default = ar & _SEGMENT_DB ? 4 : 2;
-    ad_default = ad_bytes = op_default;
-    opnd_sel = opnd_off = 0;
-    jump = -1;
-    for ( eip = regs->eip; eip - regs->_eip < 10; )
+    ctxt.ctxt.addr_size = ar & _SEGMENT_DB ? 32 : 16;
+    /* Leave zero in ctxt.ctxt.sp_size, as it's not needed for decoding. */
+    state = x86_decode_insn(&ctxt.ctxt, gate_op_read);
+    ctxt.insn_fetch = false;
+    if ( IS_ERR_OR_NULL(state) )
     {
-        switch ( insn_fetch(u8, base, eip, limit) )
+        if ( PTR_ERR(state) == -X86EMUL_EXCEPTION )
         {
-        case 0x66: /* operand-size override */
-            op_bytes = op_default ^ 6; /* switch between 2/4 bytes */
-            continue;
-        case 0x67: /* address-size override */
-            ad_bytes = ad_default != 4 ? 4 : 2; /* switch to 2/4 bytes */
-            continue;
-        case 0x2e: /* CS override */
-            opnd_sel = regs->cs;
-            ASSERT(opnd_sel);
-            continue;
-        case 0x3e: /* DS override */
-            opnd_sel = read_sreg(ds);
-            if ( !opnd_sel )
-                opnd_sel = dpl;
-            continue;
-        case 0x26: /* ES override */
-            opnd_sel = read_sreg(es);
-            if ( !opnd_sel )
-                opnd_sel = dpl;
-            continue;
-        case 0x64: /* FS override */
-            opnd_sel = read_sreg(fs);
-            if ( !opnd_sel )
-                opnd_sel = dpl;
-            continue;
-        case 0x65: /* GS override */
-            opnd_sel = read_sreg(gs);
-            if ( !opnd_sel )
-                opnd_sel = dpl;
-            continue;
-        case 0x36: /* SS override */
-            opnd_sel = regs->ss;
-            if ( !opnd_sel )
-                opnd_sel = dpl;
-            continue;
-        case 0xea:
-            ++jump;
-            /* FALLTHROUGH */
-        case 0x9a:
-            ++jump;
-            opnd_sel = regs->cs;
-            opnd_off = eip;
-            ad_bytes = ad_default;
-            eip += op_bytes + 2;
+            ASSERT(ctxt.ctxt.event_pending);
+            pv_inject_event(&ctxt.ctxt.event);
+        }
+        else
+        {
+            ASSERT(!ctxt.ctxt.event_pending);
+            do_guest_trap(TRAP_gp_fault, regs);
+        }
+        return;
+    }
+
+    switch ( ctxt.ctxt.opcode )
+    {
+        unsigned int modrm_345;
+
+    case 0xea:
+        ++jump;
+        /* fall through */
+    case 0x9a:
+        ++jump;
+        opnd_sel = x86_insn_immediate(state, 1);
+        break;
+    case 0xff:
+        if ( x86_insn_modrm(state, NULL, &modrm_345) >= 3 )
             break;
-        case 0xff:
-            {
-                unsigned int modrm;
+        switch ( modrm_345 & 7 )
+        {
+            enum x86_segment seg;
 
-                switch ( (modrm = insn_fetch(u8, base, eip, limit)) & 0xf8 )
-                {
-                case 0x28: case 0x68: case 0xa8:
-                    ++jump;
-                    /* FALLTHROUGH */
-                case 0x18: case 0x58: case 0x98:
-                    ++jump;
-                    if ( ad_bytes != 2 )
-                    {
-                        if ( (modrm & 7) == 4 )
-                        {
-                            unsigned int sib;
-                            sib = insn_fetch(u8, base, eip, limit);
-
-                            modrm = (modrm & ~7) | (sib & 7);
-                            if ( ((sib >>= 3) & 7) != 4 )
-                                opnd_off = *(unsigned long *)
-                                    decode_register(sib & 7, regs, 0);
-                            opnd_off <<= sib >> 3;
-                        }
-                        if ( (modrm & 7) != 5 || (modrm & 0xc0) )
-                            opnd_off += *(unsigned long *)
-                                decode_register(modrm & 7, regs, 0);
-                        else
-                            modrm |= 0x87;
-                        if ( !opnd_sel )
-                        {
-                            switch ( modrm & 7 )
-                            {
-                            default:
-                                opnd_sel = read_sreg(ds);
-                                break;
-                            case 4: case 5:
-                                opnd_sel = regs->ss;
-                                break;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        switch ( modrm & 7 )
-                        {
-                        case 0: case 1: case 7:
-                            opnd_off = regs->ebx;
-                            break;
-                        case 6:
-                            if ( !(modrm & 0xc0) )
-                                modrm |= 0x80;
-                            else
-                        case 2: case 3:
-                            {
-                                opnd_off = regs->ebp;
-                                if ( !opnd_sel )
-                                    opnd_sel = regs->ss;
-                            }
-                            break;
-                        }
-                        if ( !opnd_sel )
-                            opnd_sel = read_sreg(ds);
-                        switch ( modrm & 7 )
-                        {
-                        case 0: case 2: case 4:
-                            opnd_off += regs->esi;
-                            break;
-                        case 1: case 3: case 5:
-                            opnd_off += regs->edi;
-                            break;
-                        }
-                    }
-                    switch ( modrm & 0xc0 )
-                    {
-                    case 0x40:
-                        opnd_off += insn_fetch(s8, base, eip, limit);
-                        break;
-                    case 0x80:
-                        if ( ad_bytes > 2 )
-                            opnd_off += insn_fetch(s32, base, eip, limit);
-                        else
-                            opnd_off += insn_fetch(s16, base, eip, limit);
-                        break;
-                    }
-                    if ( ad_bytes == 4 )
-                        opnd_off = (unsigned int)opnd_off;
-                    else if ( ad_bytes == 2 )
-                        opnd_off = (unsigned short)opnd_off;
-                    break;
-                }
-            }
+        case 5:
+            ++jump;
+            /* fall through */
+        case 3:
+            ++jump;
+            base = x86_insn_operand_ea(state, &seg);
+            rc = gate_op_read(seg,
+                              base + (x86_insn_opsize(state) >> 3),
+                              &opnd_sel, sizeof(opnd_sel), &ctxt.ctxt);
             break;
         }
         break;
     }
 
-    if ( jump < 0 )
+    insn_len = x86_insn_length(state, &ctxt.ctxt);
+    x86_emulate_free_state(state);
+
+    if ( rc == X86EMUL_EXCEPTION )
     {
- fail:
-        do_guest_trap(TRAP_gp_fault, regs);
- skip:
+        ASSERT(ctxt.ctxt.event_pending);
+        pv_inject_event(&ctxt.ctxt.event);
         return;
     }
 
-    if ( (opnd_sel != regs->cs &&
-          !read_descriptor(opnd_sel, v, &base, &limit, &ar, 0)) ||
-         !(ar & _SEGMENT_S) ||
-         !(ar & _SEGMENT_P) ||
-         ((ar & _SEGMENT_CODE) && !(ar & _SEGMENT_WR)) )
-    {
-        do_guest_trap(TRAP_gp_fault, regs);
-        return;
-    }
+    ASSERT(!ctxt.ctxt.event_pending);
 
-    opnd_off += op_bytes;
-#define ad_default ad_bytes
-    opnd_sel = insn_fetch(u16, base, opnd_off, limit);
-#undef ad_default
-    if ( (opnd_sel & ~3) != regs->error_code || dpl < (opnd_sel & 3) )
+    if ( rc != X86EMUL_OKAY ||
+         jump < 0 ||
+         (opnd_sel & ~3) != regs->error_code ||
+         dpl < (opnd_sel & 3) )
     {
         do_guest_trap(TRAP_gp_fault, regs);
         return;
@@ -3562,20 +3261,17 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
           ((ar >> 13) & 3) > (regs->cs & 3) :
           ((ar >> 13) & 3) != (regs->cs & 3)) )
     {
-        regs->error_code = sel;
-        do_guest_trap(TRAP_gp_fault, regs);
+        pv_inject_hw_exception(TRAP_gp_fault, sel);
         return;
     }
     if ( !(ar & _SEGMENT_P) )
     {
-        regs->error_code = sel;
-        do_guest_trap(TRAP_no_segment, regs);
+        pv_inject_hw_exception(TRAP_no_segment, sel);
         return;
     }
     if ( off > limit )
     {
-        regs->error_code = 0;
-        do_guest_trap(TRAP_gp_fault, regs);
+        pv_inject_hw_exception(TRAP_gp_fault, 0);
         return;
     }
 
@@ -3614,15 +3310,13 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
                  (ar & _SEGMENT_CODE) ||
                  !(ar & _SEGMENT_WR) )
             {
-                regs->error_code = ss & ~3;
-                do_guest_trap(TRAP_invalid_tss, regs);
+                pv_inject_hw_exception(TRAP_invalid_tss, ss & ~3);
                 return;
             }
             if ( !(ar & _SEGMENT_P) ||
                  !check_stack_limit(ar, limit, esp, (4 + nparm) * 4) )
             {
-                regs->error_code = ss & ~3;
-                do_guest_trap(TRAP_stack_error, regs);
+                pv_inject_hw_exception(TRAP_stack_error, ss & ~3);
                 return;
             }
             stkp = (unsigned int *)(unsigned long)((unsigned int)base + esp);
@@ -3632,7 +3326,7 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
                 return;
             }
             push(regs->ss);
-            push(regs->esp);
+            push(regs->rsp);
             if ( nparm )
             {
                 const unsigned int *ustkp;
@@ -3668,7 +3362,7 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
         else
         {
             sel |= (regs->cs & 3);
-            esp = regs->esp;
+            esp = regs->rsp;
             ss = regs->ss;
             if ( !read_descriptor(ss, v, &base, &limit, &ar, 0) ||
                  ((ar >> 13) & 3) != (sel & 3) )
@@ -3678,8 +3372,7 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
             }
             if ( !check_stack_limit(ar, limit, esp, 2 * 4) )
             {
-                regs->error_code = 0;
-                do_guest_trap(TRAP_stack_error, regs);
+                pv_inject_hw_exception(TRAP_stack_error, 0);
                 return;
             }
             stkp = (unsigned int *)(unsigned long)((unsigned int)base + esp);
@@ -3690,16 +3383,16 @@ static void emulate_gate_op(struct cpu_user_regs *regs)
             }
         }
         push(regs->cs);
-        push(eip);
+        push(regs->rip + insn_len);
 #undef push
-        regs->esp = esp;
+        regs->rsp = esp;
         regs->ss = ss;
     }
     else
         sel |= (regs->cs & 3);
 
     regs->cs = sel;
-    instruction_done(regs, off, 0);
+    instruction_done(regs, off);
 }
 
 void do_general_protection(struct cpu_user_regs *regs)
@@ -3745,7 +3438,7 @@ void do_general_protection(struct cpu_user_regs *regs)
         ti = &v->arch.pv_vcpu.trap_ctxt[vector];
         if ( permit_softint(TI_GET_DPL(ti), v, regs) )
         {
-            regs->eip += 2;
+            regs->rip += 2;
             do_guest_trap(vector, regs);
             return;
         }
@@ -3760,7 +3453,7 @@ void do_general_protection(struct cpu_user_regs *regs)
     if ( (regs->error_code == 0) &&
          emulate_privileged_op(regs) )
     {
-        trace_trap_one_addr(TRC_PV_EMULATE_PRIVOP, regs->eip);
+        trace_trap_one_addr(TRC_PV_EMULATE_PRIVOP, regs->rip);
         return;
     }
 
@@ -3770,12 +3463,12 @@ void do_general_protection(struct cpu_user_regs *regs)
 
  gp_in_kernel:
 
-    if ( likely((fixup = search_exception_table(regs->eip)) != 0) )
+    if ( likely((fixup = search_exception_table(regs->rip)) != 0) )
     {
         dprintk(XENLOG_INFO, "GPF (%04x): %p -> %p\n",
-                regs->error_code, _p(regs->eip), _p(fixup));
-        this_cpu(last_extable_addr) = regs->eip;
-        regs->eip = fixup;
+                regs->error_code, _p(regs->rip), _p(fixup));
+        this_cpu(last_extable_addr) = regs->rip;
+        regs->rip = fixup;
         return;
     }
 
@@ -4025,20 +3718,20 @@ void do_debug(struct cpu_user_regs *regs)
 
     if ( !guest_mode(regs) )
     {
-        if ( regs->eflags & X86_EFLAGS_TF )
+        if ( regs->_eflags & X86_EFLAGS_TF )
         {
             /* In SYSENTER entry path we can't zap TF until EFLAGS is saved. */
             if ( (regs->rip >= (unsigned long)sysenter_entry) &&
                  (regs->rip <= (unsigned long)sysenter_eflags_saved) )
             {
                 if ( regs->rip == (unsigned long)sysenter_eflags_saved )
-                    regs->eflags &= ~X86_EFLAGS_TF;
+                    regs->_eflags &= ~X86_EFLAGS_TF;
                 goto out;
             }
             if ( !debugger_trap_fatal(TRAP_debug, regs) )
             {
                 WARN();
-                regs->eflags &= ~X86_EFLAGS_TF;
+                regs->_eflags &= ~X86_EFLAGS_TF;
             }
         }
         else
@@ -4049,7 +3742,7 @@ void do_debug(struct cpu_user_regs *regs)
              * watchpoint set on it. No need to bump EIP; the only faulting
              * trap is an instruction breakpoint, which can't happen to us.
              */
-            WARN_ON(!search_exception_table(regs->eip));
+            WARN_ON(!search_exception_table(regs->rip));
         }
         goto out;
     }

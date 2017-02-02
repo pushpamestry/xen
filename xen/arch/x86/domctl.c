@@ -48,47 +48,129 @@ static int gdbsx_guest_mem_io(domid_t domid, struct xen_domctl_gdbsx_memio *iop)
     return iop->remain ? -EFAULT : 0;
 }
 
-static void update_domain_cpuid_info(struct domain *d,
+static int update_legacy_cpuid_array(struct domain *d,
                                      const xen_domctl_cpuid_t *ctl)
 {
+    xen_domctl_cpuid_t *cpuid, *unused = NULL;
+    unsigned int i;
+
+    /* Try to insert ctl into d->arch.cpuids[] */
+    for ( i = 0; i < MAX_CPUID_INPUT; i++ )
+    {
+        cpuid = &d->arch.cpuid->legacy[i];
+
+        if ( cpuid->input[0] == XEN_CPUID_INPUT_UNUSED )
+        {
+            if ( !unused )
+                unused = cpuid;
+            continue;
+        }
+
+        if ( (cpuid->input[0] == ctl->input[0]) &&
+             ((cpuid->input[1] == XEN_CPUID_INPUT_UNUSED) ||
+              (cpuid->input[1] == ctl->input[1])) )
+            break;
+    }
+
+    if ( !(ctl->eax | ctl->ebx | ctl->ecx | ctl->edx) )
+    {
+        if ( i < MAX_CPUID_INPUT )
+            cpuid->input[0] = XEN_CPUID_INPUT_UNUSED;
+    }
+    else if ( i < MAX_CPUID_INPUT )
+        *cpuid = *ctl;
+    else if ( unused )
+        *unused = *ctl;
+    else
+        return -ENOENT;
+
+    return 0;
+}
+
+static int update_domain_cpuid_info(struct domain *d,
+                                    const xen_domctl_cpuid_t *ctl)
+{
+    struct cpuid_policy *p = d->arch.cpuid;
+    const struct cpuid_leaf leaf = { ctl->eax, ctl->ebx, ctl->ecx, ctl->edx };
+    int rc, old_vendor = p->x86_vendor;
+
+    /*
+     * Skip update for leaves we don't care about.  This avoids the overhead
+     * of recalculate_cpuid_policy() and making d->arch.cpuids[] needlessly
+     * longer to search.
+     */
     switch ( ctl->input[0] )
     {
-    case 0: {
-        union {
-            typeof(boot_cpu_data.x86_vendor_id) str;
-            struct {
-                uint32_t ebx, edx, ecx;
-            } reg;
-        } vendor_id = {
-            .reg = {
-                .ebx = ctl->ebx,
-                .edx = ctl->edx,
-                .ecx = ctl->ecx
-            }
-        };
-        int old_vendor = d->arch.x86_vendor;
+    case 0x00000000 ... ARRAY_SIZE(p->basic.raw) - 1:
+        if ( ctl->input[0] == 7 &&
+             ctl->input[1] >= ARRAY_SIZE(p->feat.raw) )
+            return 0;
 
-        d->arch.x86_vendor = get_cpu_vendor(vendor_id.str, gcv_guest);
+        BUILD_BUG_ON(ARRAY_SIZE(p->xstate.raw) < 2);
+        if ( ctl->input[0] == XSTATE_CPUID &&
+             ctl->input[1] != 1 ) /* Everything else automatically calculated. */
+            return 0;
+        break;
 
-        if ( is_hvm_domain(d) && (d->arch.x86_vendor != old_vendor) )
+    case 0x40000000: case 0x40000100:
+        /* Only care about the max_leaf limit. */
+
+    case 0x80000000 ... 0x80000000 + ARRAY_SIZE(p->extd.raw) - 1:
+        break;
+
+    default:
+        return 0;
+    }
+
+    rc = update_legacy_cpuid_array(d, ctl);
+    if ( rc )
+        return rc;
+
+    /* Insert ctl data into cpuid_policy. */
+    switch ( ctl->input[0] )
+    {
+    case 0x00000000 ... ARRAY_SIZE(p->basic.raw) - 1:
+        if ( ctl->input[0] == 7 )
+            p->feat.raw[ctl->input[1]] = leaf;
+        else if ( ctl->input[0] == XSTATE_CPUID )
+            p->xstate.raw[ctl->input[1]] = leaf;
+        else
+            p->basic.raw[ctl->input[0]] = leaf;
+        break;
+
+    case 0x40000000:
+        p->hv_limit = ctl->eax;
+        break;
+
+    case 0x40000100:
+        p->hv2_limit = ctl->eax;
+        break;
+
+    case 0x80000000 ... 0x80000000 + ARRAY_SIZE(p->extd.raw) - 1:
+        p->extd.raw[ctl->input[0] - 0x80000000] = leaf;
+        break;
+    }
+
+    recalculate_cpuid_policy(d);
+
+    switch ( ctl->input[0] )
+    {
+    case 0:
+        if ( is_hvm_domain(d) && (p->x86_vendor != old_vendor) )
         {
             struct vcpu *v;
 
             for_each_vcpu( d, v )
                 hvm_update_guest_vendor(v);
         }
-
         break;
-    }
 
     case 1:
-        d->arch.x86 = get_cpu_family(ctl->eax, &d->arch.x86_model, NULL);
-
         if ( is_pv_domain(d) && ((levelling_caps & LCAP_1cd) == LCAP_1cd) )
         {
             uint64_t mask = cpuidmask_defaults._1cd;
-            uint32_t ecx = ctl->ecx & pv_featureset[FEATURESET_1c];
-            uint32_t edx = ctl->edx & pv_featureset[FEATURESET_1d];
+            uint32_t ecx = p->basic._1c;
+            uint32_t edx = p->basic._1d;
 
             /*
              * Must expose hosts HTT and X2APIC value so a guest using native
@@ -162,7 +244,7 @@ static void update_domain_cpuid_info(struct domain *d,
         {
             uint64_t mask = cpuidmask_defaults._7ab0;
             uint32_t eax = ctl->eax;
-            uint32_t ebx = ctl->ebx & pv_featureset[FEATURESET_7b0];
+            uint32_t ebx = p->feat._7b0;
 
             if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
                 mask &= ((uint64_t)eax << 32) | ebx;
@@ -178,7 +260,7 @@ static void update_domain_cpuid_info(struct domain *d,
         if ( is_pv_domain(d) && ((levelling_caps & LCAP_Da1) == LCAP_Da1) )
         {
             uint64_t mask = cpuidmask_defaults.Da1;
-            uint32_t eax = ctl->eax & pv_featureset[FEATURESET_Da1];
+            uint32_t eax = p->xstate.Da1;
 
             if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
                 mask &= (~0ULL << 32) | eax;
@@ -191,8 +273,8 @@ static void update_domain_cpuid_info(struct domain *d,
         if ( is_pv_domain(d) && ((levelling_caps & LCAP_e1cd) == LCAP_e1cd) )
         {
             uint64_t mask = cpuidmask_defaults.e1cd;
-            uint32_t ecx = ctl->ecx & pv_featureset[FEATURESET_e1c];
-            uint32_t edx = ctl->edx & pv_featureset[FEATURESET_e1d];
+            uint32_t ecx = p->extd.e1c;
+            uint32_t edx = p->extd.e1d;
 
             /*
              * Must expose hosts CMP_LEGACY value so a guest using native
@@ -203,7 +285,7 @@ static void update_domain_cpuid_info(struct domain *d,
                 ecx |= cpufeat_mask(X86_FEATURE_CMP_LEGACY);
 
             /* If not emulating AMD, clear the duplicated features in e1d. */
-            if ( d->arch.x86_vendor != X86_VENDOR_AMD )
+            if ( p->x86_vendor != X86_VENDOR_AMD )
                 edx &= ~CPUID_COMMON_1D_FEATURES;
 
             switch ( boot_cpu_data.x86_vendor )
@@ -230,6 +312,8 @@ static void update_domain_cpuid_info(struct domain *d,
         }
         break;
     }
+
+    return 0;
 }
 
 void arch_get_domain_info(const struct domain *d,
@@ -525,18 +609,13 @@ long arch_do_domctl(
         break;
 
     case XEN_DOMCTL_set_address_size:
-        switch ( domctl->u.address_size.size )
-        {
-        case 32:
+        if ( ((domctl->u.address_size.size == 64) && !d->arch.is_32bit_pv) ||
+             ((domctl->u.address_size.size == 32) && d->arch.is_32bit_pv) )
+            ret = 0;
+        else if ( domctl->u.address_size.size == 32 )
             ret = switch_compat(d);
-            break;
-        case 64:
-            ret = switch_native(d);
-            break;
-        default:
-            ret = (domctl->u.address_size.size == BITS_PER_LONG) ? 0 : -EINVAL;
-            break;
-        }
+        else
+            ret = -EINVAL;
         break;
 
     case XEN_DOMCTL_get_address_size:
@@ -861,53 +940,15 @@ long arch_do_domctl(
     }
 
     case XEN_DOMCTL_set_cpuid:
-    {
-        const xen_domctl_cpuid_t *ctl = &domctl->u.cpuid;
-        cpuid_input_t *cpuid, *unused = NULL;
-
         if ( d == currd ) /* no domain_pause() */
-        {
             ret = -EINVAL;
-            break;
-        }
-
-        for ( i = 0; i < MAX_CPUID_INPUT; i++ )
-        {
-            cpuid = &d->arch.cpuids[i];
-
-            if ( cpuid->input[0] == XEN_CPUID_INPUT_UNUSED )
-            {
-                if ( !unused )
-                    unused = cpuid;
-                continue;
-            }
-
-            if ( (cpuid->input[0] == ctl->input[0]) &&
-                 ((cpuid->input[1] == XEN_CPUID_INPUT_UNUSED) ||
-                  (cpuid->input[1] == ctl->input[1])) )
-                break;
-        }
-
-        domain_pause(d);
-
-        if ( !(ctl->eax | ctl->ebx | ctl->ecx | ctl->edx) )
-        {
-            if ( i < MAX_CPUID_INPUT )
-                cpuid->input[0] = XEN_CPUID_INPUT_UNUSED;
-        }
-        else if ( i < MAX_CPUID_INPUT )
-            *cpuid = *ctl;
-        else if ( unused )
-            *unused = *ctl;
         else
-            ret = -ENOENT;
-
-        if ( !ret )
-            update_domain_cpuid_info(d, ctl);
-
-        domain_unpause(d);
+        {
+            domain_pause(d);
+            ret = update_domain_cpuid_info(d, &domctl->u.cpuid);
+            domain_unpause(d);
+        }
         break;
-    }
 
     case XEN_DOMCTL_gettscinfo:
         if ( d == currd ) /* no domain_pause() */
@@ -1425,6 +1466,11 @@ long arch_do_domctl(
         }
         break;
 
+    case XEN_DOMCTL_disable_migrate:
+        d->disable_migrate = domctl->u.disable_migrate.disable;
+        recalculate_cpuid_policy(d);
+        break;
+
     default:
         ret = iommu_do_domctl(domctl, d, u_domctl);
         break;
@@ -1541,8 +1587,8 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
         }
 
         /* IOPL privileges are virtualised: merge back into returned eflags. */
-        BUG_ON((c(user_regs.eflags) & X86_EFLAGS_IOPL) != 0);
-        c(user_regs.eflags |= v->arch.pv_vcpu.iopl);
+        BUG_ON((c(user_regs._eflags) & X86_EFLAGS_IOPL) != 0);
+        c(user_regs._eflags |= v->arch.pv_vcpu.iopl);
 
         if ( !compat )
         {

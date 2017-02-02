@@ -459,7 +459,11 @@ static void gicv3_dir_irq(struct irq_desc *irqd)
 
 static unsigned int gicv3_read_irq(void)
 {
-    return READ_SYSREG32(ICC_IAR1_EL1);
+    unsigned int irq = READ_SYSREG32(ICC_IAR1_EL1);
+
+    dsb(sy);
+
+    return irq;
 }
 
 static inline uint64_t gicv3_mpidr_to_affinity(int cpu)
@@ -1234,37 +1238,37 @@ static void __init gicv3_dt_init(void)
 static int gicv3_iomem_deny_access(const struct domain *d)
 {
     int rc, i;
-    unsigned long gfn, nr;
+    unsigned long mfn, nr;
 
-    gfn = dbase >> PAGE_SHIFT;
+    mfn = dbase >> PAGE_SHIFT;
     nr = DIV_ROUND_UP(SZ_64K, PAGE_SIZE);
-    rc = iomem_deny_access(d, gfn, gfn + nr);
+    rc = iomem_deny_access(d, mfn, mfn + nr);
     if ( rc )
         return rc;
 
     for ( i = 0; i < gicv3.rdist_count; i++ )
     {
-        gfn = gicv3.rdist_regions[i].base >> PAGE_SHIFT;
+        mfn = gicv3.rdist_regions[i].base >> PAGE_SHIFT;
         nr = DIV_ROUND_UP(gicv3.rdist_regions[i].size, PAGE_SIZE);
-        rc = iomem_deny_access(d, gfn, gfn + nr);
+        rc = iomem_deny_access(d, mfn, mfn + nr);
         if ( rc )
             return rc;
     }
 
     if ( cbase != INVALID_PADDR )
     {
-        gfn = cbase >> PAGE_SHIFT;
+        mfn = cbase >> PAGE_SHIFT;
         nr = DIV_ROUND_UP(csize, PAGE_SIZE);
-        rc = iomem_deny_access(d, gfn, gfn + nr);
+        rc = iomem_deny_access(d, mfn, mfn + nr);
         if ( rc )
             return rc;
     }
 
     if ( vbase != INVALID_PADDR )
     {
-        gfn = vbase >> PAGE_SHIFT;
+        mfn = vbase >> PAGE_SHIFT;
         nr = DIV_ROUND_UP(csize, PAGE_SIZE);
-        return iomem_deny_access(d, gfn, gfn + nr);
+        return iomem_deny_access(d, mfn, mfn + nr);
     }
 
     return 0;

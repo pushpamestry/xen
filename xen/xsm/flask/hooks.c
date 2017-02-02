@@ -1180,9 +1180,6 @@ static int flask_hvm_param(struct domain *d, unsigned long op)
     case HVMOP_get_param:
         perm = HVM__GETPARAM;
         break;
-    case HVMOP_track_dirty_vram:
-        perm = HVM__TRACKDIRTYVRAM;
-        break;
     default:
         perm = HVM__HVMCTL;
     }
@@ -1505,31 +1502,6 @@ static int flask_ioport_mapping(struct domain *d, uint32_t start, uint32_t end, 
     return flask_ioport_permission(d, start, end, access);
 }
 
-static int flask_hvm_set_pci_intx_level(struct domain *d)
-{
-    return current_has_perm(d, SECCLASS_HVM, HVM__PCILEVEL);
-}
-
-static int flask_hvm_set_isa_irq_level(struct domain *d)
-{
-    return current_has_perm(d, SECCLASS_HVM, HVM__IRQLEVEL);
-}
-
-static int flask_hvm_set_pci_link_route(struct domain *d)
-{
-    return current_has_perm(d, SECCLASS_HVM, HVM__PCIROUTE);
-}
-
-static int flask_hvm_inject_msi(struct domain *d)
-{
-    return current_has_perm(d, SECCLASS_HVM, HVM__SEND_IRQ);
-}
-
-static int flask_hvm_ioreq_server(struct domain *d, int op)
-{
-    return current_has_perm(d, SECCLASS_HVM, HVM__HVMCTL);
-}
-
 static int flask_mem_sharing_op(struct domain *d, struct domain *cd, int op)
 {
     int rc = current_has_perm(cd, SECCLASS_HVM, HVM__MEM_SHARING);
@@ -1635,6 +1607,12 @@ static int flask_pmu_op (struct domain *d, unsigned int op)
         return -EPERM;
     }
 }
+
+static int flask_dm_op(struct domain *d)
+{
+    return current_has_perm(d, SECCLASS_HVM, HVM__DM);
+}
+
 #endif /* CONFIG_X86 */
 
 static int flask_xen_version (uint32_t op)
@@ -1798,11 +1776,6 @@ static struct xsm_operations flask_ops = {
 #ifdef CONFIG_X86
     .do_mca = flask_do_mca,
     .shadow_control = flask_shadow_control,
-    .hvm_set_pci_intx_level = flask_hvm_set_pci_intx_level,
-    .hvm_set_isa_irq_level = flask_hvm_set_isa_irq_level,
-    .hvm_set_pci_link_route = flask_hvm_set_pci_link_route,
-    .hvm_inject_msi = flask_hvm_inject_msi,
-    .hvm_ioreq_server = flask_hvm_ioreq_server,
     .mem_sharing_op = flask_mem_sharing_op,
     .apic = flask_apic,
     .machine_memory_map = flask_machine_memory_map,
@@ -1814,6 +1787,7 @@ static struct xsm_operations flask_ops = {
     .ioport_permission = flask_ioport_permission,
     .ioport_mapping = flask_ioport_mapping,
     .pmu_op = flask_pmu_op,
+    .dm_op = flask_dm_op,
 #endif
     .xen_version = flask_xen_version,
 };

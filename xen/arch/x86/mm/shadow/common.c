@@ -330,6 +330,7 @@ const struct x86_emulate_ops *shadow_init_emulation(
     memset(sh_ctxt, 0, sizeof(*sh_ctxt));
 
     sh_ctxt->ctxt.regs = regs;
+    sh_ctxt->ctxt.vendor = v->domain->arch.cpuid->x86_vendor;
     sh_ctxt->ctxt.swint_emulate = x86_swint_emulate_none;
 
     /* Segment cache initialisation. Primed with CS. */
@@ -348,10 +349,10 @@ const struct x86_emulate_ops *shadow_init_emulation(
     }
 
     /* Attempt to prefetch whole instruction. */
-    sh_ctxt->insn_buf_eip = regs->eip;
+    sh_ctxt->insn_buf_eip = regs->rip;
     sh_ctxt->insn_buf_bytes =
         (!hvm_translate_linear_addr(
-            x86_seg_cs, regs->eip, sizeof(sh_ctxt->insn_buf),
+            x86_seg_cs, regs->rip, sizeof(sh_ctxt->insn_buf),
             hvm_access_insn_fetch, sh_ctxt, &addr) &&
          !hvm_fetch_from_guest_linear(
              sh_ctxt->insn_buf, addr, sizeof(sh_ctxt->insn_buf), 0, NULL))
@@ -374,18 +375,18 @@ void shadow_continue_emulation(struct sh_emulate_ctxt *sh_ctxt,
      * We don't refetch the segment bases, because we don't emulate
      * writes to segment registers
      */
-    diff = regs->eip - sh_ctxt->insn_buf_eip;
+    diff = regs->rip - sh_ctxt->insn_buf_eip;
     if ( diff > sh_ctxt->insn_buf_bytes )
     {
         /* Prefetch more bytes. */
         sh_ctxt->insn_buf_bytes =
             (!hvm_translate_linear_addr(
-                x86_seg_cs, regs->eip, sizeof(sh_ctxt->insn_buf),
+                x86_seg_cs, regs->rip, sizeof(sh_ctxt->insn_buf),
                 hvm_access_insn_fetch, sh_ctxt, &addr) &&
              !hvm_fetch_from_guest_linear(
                  sh_ctxt->insn_buf, addr, sizeof(sh_ctxt->insn_buf), 0, NULL))
             ? sizeof(sh_ctxt->insn_buf) : 0;
-        sh_ctxt->insn_buf_eip = regs->eip;
+        sh_ctxt->insn_buf_eip = regs->rip;
     }
 }
 
@@ -999,7 +1000,7 @@ sh_validate_guest_entry(struct vcpu *v, mfn_t gmfn, void *entry, u32 size)
     int result = 0;
     struct page_info *page = mfn_to_page(gmfn);
 
-    paging_mark_dirty(v->domain, mfn_x(gmfn));
+    paging_mark_dirty(v->domain, gmfn);
 
     // Determine which types of shadows are affected, and update each.
     //
@@ -1706,7 +1707,7 @@ void *sh_emulate_map_dest(struct vcpu *v, unsigned long vaddr,
 #ifndef NDEBUG
     /* We don't emulate user-mode writes to page tables. */
     if ( has_hvm_container_domain(d)
-         ? hvm_get_seg_reg(x86_seg_ss, sh_ctxt)->attr.fields.dpl == 3
+         ? hvm_get_cpl(v) == 3
          : !guest_kernel_mode(v, guest_cpu_user_regs()) )
     {
         gdprintk(XENLOG_DEBUG, "User-mode write to pagetable reached "
@@ -1818,11 +1819,11 @@ void sh_emulate_unmap_dest(struct vcpu *v, void *addr, unsigned int bytes,
             sh_validate_guest_pt_write(v, sh_ctxt->mfn[1], addr + b1, b2);
     }
 
-    paging_mark_dirty(v->domain, mfn_x(sh_ctxt->mfn[0]));
+    paging_mark_dirty(v->domain, sh_ctxt->mfn[0]);
 
     if ( unlikely(mfn_valid(sh_ctxt->mfn[1])) )
     {
-        paging_mark_dirty(v->domain, mfn_x(sh_ctxt->mfn[1]));
+        paging_mark_dirty(v->domain, sh_ctxt->mfn[1]);
         vunmap((void *)((unsigned long)addr & PAGE_MASK));
     }
     else
@@ -3603,7 +3604,7 @@ static void sh_clean_dirty_bitmap(struct domain *d)
 int shadow_track_dirty_vram(struct domain *d,
                             unsigned long begin_pfn,
                             unsigned long nr,
-                            XEN_GUEST_HANDLE_64(uint8) guest_dirty_bitmap)
+                            XEN_GUEST_HANDLE_PARAM(void) guest_dirty_bitmap)
 {
     int rc = 0;
     unsigned long end_pfn = begin_pfn + nr;

@@ -20,15 +20,9 @@
  * CPU vendor IDs
  */
 #define X86_VENDOR_INTEL 0
-#define X86_VENDOR_CYRIX 1
-#define X86_VENDOR_AMD 2
-#define X86_VENDOR_UMC 3
-#define X86_VENDOR_NEXGEN 4
-#define X86_VENDOR_CENTAUR 5
-#define X86_VENDOR_RISE 6
-#define X86_VENDOR_TRANSMETA 7
-#define X86_VENDOR_NSC 8
-#define X86_VENDOR_NUM 9
+#define X86_VENDOR_AMD 1
+#define X86_VENDOR_CENTAUR 2
+#define X86_VENDOR_NUM 3
 #define X86_VENDOR_UNKNOWN 0xff
 
 /*
@@ -52,6 +46,10 @@
 #define X86_EFLAGS_VIF	0x00080000 /* Virtual Interrupt Flag */
 #define X86_EFLAGS_VIP	0x00100000 /* Virtual Interrupt Pending */
 #define X86_EFLAGS_ID	0x00200000 /* CPUID detection flag */
+
+#define X86_EFLAGS_ARITH_MASK                          \
+    (X86_EFLAGS_CF | X86_EFLAGS_PF | X86_EFLAGS_AF |   \
+     X86_EFLAGS_ZF | X86_EFLAGS_SF | X86_EFLAGS_OF)
 
 /*
  * Intel CPU flags in CR0
@@ -319,6 +317,16 @@ static always_inline unsigned int cpuid_edx(unsigned int op)
           : "0" (op)
           : "bx", "cx" );
     return edx;
+}
+
+static always_inline unsigned int cpuid_count_ebx(
+    unsigned int leaf, unsigned int subleaf)
+{
+    unsigned int ebx, tmp;
+
+    cpuid_count(leaf, subleaf, &tmp, &ebx, &tmp, &tmp);
+
+    return ebx;
 }
 
 static inline unsigned long read_cr0(void)
@@ -612,8 +620,8 @@ struct stubs {
 DECLARE_PER_CPU(struct stubs, stubs);
 unsigned long alloc_stub_page(unsigned int cpu, unsigned long *mfn);
 
-int cpuid_hypervisor_leaves( uint32_t idx, uint32_t sub_idx,
-          uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx);
+void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
+                             uint32_t subleaf, struct cpuid_leaf *res);
 int rdmsr_hypervisor_regs(uint32_t idx, uint64_t *val);
 int wrmsr_hypervisor_regs(uint32_t idx, uint64_t val);
 
@@ -626,10 +634,29 @@ enum get_cpu_vendor {
     gcv_guest,
 };
 
-int get_cpu_vendor(const char vendor_id[], enum get_cpu_vendor);
-uint8_t get_cpu_family(uint32_t raw, uint8_t *model, uint8_t *stepping);
+int get_cpu_vendor(uint32_t b, uint32_t c, uint32_t d, enum get_cpu_vendor mode);
 
-void pv_cpuid(struct cpu_user_regs *regs);
+static inline uint8_t get_cpu_family(uint32_t raw, uint8_t *model,
+                                     uint8_t *stepping)
+{
+    uint8_t fam = (raw >> 8) & 0xf;
+
+    if ( fam == 0xf )
+        fam += (raw >> 20) & 0xff;
+
+    if ( model )
+    {
+        uint8_t mod = (raw >> 4) & 0xf;
+
+        if ( fam >= 0x6 )
+            mod |= (raw >> 12) & 0xf0;
+
+        *model = mod;
+    }
+    if ( stepping )
+        *stepping = raw & 0xf;
+    return fam;
+}
 
 #endif /* !__ASSEMBLY__ */
 

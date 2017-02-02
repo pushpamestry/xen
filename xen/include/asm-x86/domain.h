@@ -234,9 +234,6 @@ struct paging_vcpu {
     struct shadow_vcpu shadow;
 };
 
-#define MAX_CPUID_INPUT 40
-typedef xen_domctl_cpuid_t cpuid_input_t;
-
 #define MAX_NESTEDP2M 10
 
 #define MAX_ALTP2M      10 /* arbitrary */
@@ -340,11 +337,6 @@ struct arch_domain
     /* Is PHYSDEVOP_eoi to automatically unmask the event channel? */
     bool_t auto_unmask;
 
-    /* Values snooped from updates to cpuids[] (below). */
-    u8 x86;                  /* CPU family */
-    u8 x86_vendor;           /* CPU vendor */
-    u8 x86_model;            /* CPU model */
-
     /*
      * The width of the FIP/FDP register in the FPU that needs to be
      * saved/restored during a context switch.  This is needed because
@@ -360,7 +352,8 @@ struct arch_domain
      */
     uint8_t x87_fip_width;
 
-    cpuid_input_t *cpuids;
+    /* CPUID Policy. */
+    struct cpuid_policy *cpuid;
 
     struct PITState vpit;
 
@@ -577,6 +570,10 @@ struct arch_vcpu
     XEN_GUEST_HANDLE(vcpu_time_info_t) time_info_guest;
 
     struct arch_vm_event *vm_event;
+
+    struct {
+        bool next_interrupt_enabled;
+    } monitor;
 };
 
 smap_check_policy_t smap_policy_change(struct vcpu *v,
@@ -609,14 +606,6 @@ unsigned long pv_guest_cr4_fixup(const struct vcpu *, unsigned long guest_cr4);
     ((c) & ~(X86_CR4_PGE | X86_CR4_PSE | X86_CR4_TSD |      \
              X86_CR4_OSXSAVE | X86_CR4_SMEP |               \
              X86_CR4_FSGSBASE | X86_CR4_SMAP))
-
-void domain_cpuid(struct domain *d,
-                  unsigned int  input,
-                  unsigned int  sub_input,
-                  unsigned int  *eax,
-                  unsigned int  *ebx,
-                  unsigned int  *ecx,
-                  unsigned int  *edx);
 
 #define domain_max_vcpus(d) (is_hvm_domain(d) ? HVM_MAX_VCPUS : MAX_VIRT_CPUS)
 

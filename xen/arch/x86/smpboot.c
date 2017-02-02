@@ -56,6 +56,9 @@ DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, cpu_sibling_mask);
 /* representing HT and core siblings of each logical CPU */
 DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, cpu_core_mask);
 
+DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, scratch_cpumask);
+static cpumask_t scratch_cpu0mask;
+
 cpumask_t cpu_online_map __read_mostly;
 EXPORT_SYMBOL(cpu_online_map);
 
@@ -646,6 +649,8 @@ static void cpu_smpboot_free(unsigned int cpu)
 
     free_cpumask_var(per_cpu(cpu_sibling_mask, cpu));
     free_cpumask_var(per_cpu(cpu_core_mask, cpu));
+    if ( per_cpu(scratch_cpumask, cpu) != &scratch_cpu0mask )
+        free_cpumask_var(per_cpu(scratch_cpumask, cpu));
 
     if ( per_cpu(stubs.addr, cpu) )
     {
@@ -734,7 +739,8 @@ static int cpu_smpboot_alloc(unsigned int cpu)
         goto oom;
 
     if ( zalloc_cpumask_var(&per_cpu(cpu_sibling_mask, cpu)) &&
-         zalloc_cpumask_var(&per_cpu(cpu_core_mask, cpu)) )
+         zalloc_cpumask_var(&per_cpu(cpu_core_mask, cpu)) &&
+         alloc_cpumask_var(&per_cpu(scratch_cpumask, cpu)) )
         return 0;
 
  oom:
@@ -845,8 +851,13 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 
 void __init smp_prepare_boot_cpu(void)
 {
-    cpumask_set_cpu(smp_processor_id(), &cpu_online_map);
-    cpumask_set_cpu(smp_processor_id(), &cpu_present_map);
+    unsigned int cpu = smp_processor_id();
+
+    cpumask_set_cpu(cpu, &cpu_online_map);
+    cpumask_set_cpu(cpu, &cpu_present_map);
+#if NR_CPUS > 2 * BITS_PER_LONG
+    per_cpu(scratch_cpumask, cpu) = &scratch_cpu0mask;
+#endif
 }
 
 static void

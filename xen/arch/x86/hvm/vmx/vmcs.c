@@ -1484,7 +1484,9 @@ void vmx_vcpu_flush_pml_buffer(struct vcpu *v)
          * is extremely difficult to debug.
          */
         p2m_change_type_one(v->domain, gfn, p2m_ram_logdirty, p2m_ram_rw);
-        paging_mark_gfn_dirty(v->domain, gfn);
+
+        /* HVM guest: pfn == gfn */
+        paging_mark_pfn_dirty(v->domain, _pfn(gfn));
     }
 
     unmap_domain_page(pml_buf);
@@ -1776,10 +1778,10 @@ void vmcs_dump_vcpu(struct vcpu *v)
                vmr(GUEST_PDPTE(2)), vmr(GUEST_PDPTE(3)));
     }
     printk("RSP = 0x%016lx (0x%016lx)  RIP = 0x%016lx (0x%016lx)\n",
-           vmr(GUEST_RSP), regs->esp,
-           vmr(GUEST_RIP), regs->eip);
+           vmr(GUEST_RSP), regs->rsp,
+           vmr(GUEST_RIP), regs->rip);
     printk("RFLAGS=0x%08lx (0x%08lx)  DR7 = 0x%016lx\n",
-           vmr(GUEST_RFLAGS), regs->eflags,
+           vmr(GUEST_RFLAGS), regs->rflags,
            vmr(GUEST_DR7));
     printk("Sysenter RSP=%016lx CS:RIP=%04x:%016lx\n",
            vmr(GUEST_SYSENTER_ESP),

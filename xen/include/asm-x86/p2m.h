@@ -23,12 +23,13 @@
  * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef _XEN_P2M_H
-#define _XEN_P2M_H
+#ifndef _XEN_ASM_X86_P2M_H
+#define _XEN_ASM_X86_P2M_H
 
 #include <xen/config.h>
 #include <xen/paging.h>
 #include <xen/p2m-common.h>
+#include <xen/mem_access.h>
 #include <asm/mem_sharing.h>
 #include <asm/page.h>    /* for pagetable_t */
 
@@ -663,29 +664,6 @@ int p2m_mem_paging_prep(struct domain *d, unsigned long gfn, uint64_t buffer);
 /* Resume normal operation (in case a domain was paused) */
 void p2m_mem_paging_resume(struct domain *d, vm_event_response_t *rsp);
 
-/*
- * Setup vm_event request based on the access (gla is -1ull if not available).
- * Handles the rw2rx conversion. Boolean return value indicates if event type
- * is syncronous (aka. requires vCPU pause). If the req_ptr has been populated,
- * then the caller should use monitor_traps to send the event on the MONITOR
- * ring. Once having released get_gfn* locks caller must also xfree the
- * request.
- */
-bool_t p2m_mem_access_check(paddr_t gpa, unsigned long gla,
-                            struct npfec npfec,
-                            vm_event_request_t **req_ptr);
-
-/* Check for emulation and mark vcpu for skipping one instruction
- * upon rescheduling if required. */
-bool p2m_mem_access_emulate_check(struct vcpu *v,
-                                  const vm_event_response_t *rsp);
-
-/* Sanity check for mem_access hardware support */
-static inline bool_t p2m_mem_access_sanity_check(struct domain *d)
-{
-    return is_hvm_domain(d) && cpu_has_vmx && hap_enabled(d);
-}
-
 /* 
  * Internal functions, only called by other p2m code
  */
@@ -784,9 +762,6 @@ static inline struct p2m_domain *p2m_get_altp2m(struct vcpu *v)
     return v->domain->arch.altp2m_p2m[index];
 }
 
-/* Locate an alternate p2m by its EPTP */
-unsigned int p2m_find_altp2m_by_eptp(struct domain *d, uint64_t eptp);
-
 /* Switch alternate p2m for a single vcpu */
 bool_t p2m_switch_vcpu_altp2m_by_id(struct vcpu *v, unsigned int idx);
 
@@ -848,7 +823,7 @@ static inline unsigned int p2m_get_iommu_flags(p2m_type_t p2mt)
     return flags;
 }
 
-#endif /* _XEN_P2M_H */
+#endif /* _XEN_ASM_X86_P2M_H */
 
 /*
  * Local variables:

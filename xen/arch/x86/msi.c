@@ -40,7 +40,6 @@ static void __pci_disable_msix(struct msi_desc *);
 /* bitmap indicate which fixed map is free */
 static DEFINE_SPINLOCK(msix_fixmap_lock);
 static DECLARE_BITMAP(msix_fixmap_pages, FIX_MSIX_MAX_PAGES);
-static DEFINE_PER_CPU(cpumask_var_t, scratch_mask);
 
 static int msix_fixmap_alloc(void)
 {
@@ -160,39 +159,37 @@ static bool_t msix_memory_decoded(const struct pci_dev *dev, unsigned int pos)
  */
 void msi_compose_msg(unsigned vector, const cpumask_t *cpu_mask, struct msi_msg *msg)
 {
-    unsigned dest;
-
     memset(msg, 0, sizeof(*msg));
-    if ( !cpumask_intersects(cpu_mask, &cpu_online_map) )
+
+    if ( vector < FIRST_DYNAMIC_VECTOR )
         return;
 
-    if ( vector )
+    if ( cpu_mask )
     {
-        cpumask_t *mask = this_cpu(scratch_mask);
+        cpumask_t *mask = this_cpu(scratch_cpumask);
+
+        if ( !cpumask_intersects(cpu_mask, &cpu_online_map) )
+            return;
 
         cpumask_and(mask, cpu_mask, &cpu_online_map);
-        dest = cpu_mask_to_apicid(mask);
-
-        msg->address_hi = MSI_ADDR_BASE_HI;
-        msg->address_lo =
-            MSI_ADDR_BASE_LO |
-            ((INT_DEST_MODE == 0) ?
-             MSI_ADDR_DESTMODE_PHYS:
-             MSI_ADDR_DESTMODE_LOGIC) |
-            ((INT_DELIVERY_MODE != dest_LowestPrio) ?
-             MSI_ADDR_REDIRECTION_CPU:
-             MSI_ADDR_REDIRECTION_LOWPRI) |
-            MSI_ADDR_DEST_ID(dest);
-        msg->dest32 = dest;
-
-        msg->data =
-            MSI_DATA_TRIGGER_EDGE |
-            MSI_DATA_LEVEL_ASSERT |
-            ((INT_DELIVERY_MODE != dest_LowestPrio) ?
-             MSI_DATA_DELIVERY_FIXED:
-             MSI_DATA_DELIVERY_LOWPRI) |
-            MSI_DATA_VECTOR(vector);
+        msg->dest32 = cpu_mask_to_apicid(mask);
     }
+
+    msg->address_hi = MSI_ADDR_BASE_HI;
+    msg->address_lo = MSI_ADDR_BASE_LO |
+                      (INT_DEST_MODE ? MSI_ADDR_DESTMODE_LOGIC
+                                     : MSI_ADDR_DESTMODE_PHYS) |
+                      ((INT_DELIVERY_MODE != dest_LowestPrio)
+                       ? MSI_ADDR_REDIRECTION_CPU
+                       : MSI_ADDR_REDIRECTION_LOWPRI) |
+                      MSI_ADDR_DEST_ID(msg->dest32);
+
+    msg->data = MSI_DATA_TRIGGER_EDGE |
+                MSI_DATA_LEVEL_ASSERT |
+                ((INT_DELIVERY_MODE != dest_LowestPrio)
+                 ? MSI_DATA_DELIVERY_FIXED
+                 : MSI_DATA_DELIVERY_LOWPRI) |
+                MSI_DATA_VECTOR(vector);
 }
 
 static bool_t read_msi_msg(struct msi_desc *entry, struct msi_msg *msg)
@@ -1460,43 +1457,12 @@ int pci_restore_msi_state(struct pci_dev *pdev)
     return 0;
 }
 
-static int msi_cpu_callback(
-    struct notifier_block *nfb, unsigned long action, void *hcpu)
-{
-    unsigned int cpu = (unsigned long)hcpu;
-
-    switch ( action )
-    {
-    case CPU_UP_PREPARE:
-        if ( !alloc_cpumask_var(&per_cpu(scratch_mask, cpu)) )
-            return notifier_from_errno(ENOMEM);
-        break;
-    case CPU_UP_CANCELED:
-    case CPU_DEAD:
-        free_cpumask_var(per_cpu(scratch_mask, cpu));
-        break;
-    default:
-        break;
-    }
-
-    return NOTIFY_DONE;
-}
-
-static struct notifier_block msi_cpu_nfb = {
-    .notifier_call = msi_cpu_callback
-};
-
 void __init early_msi_init(void)
 {
     if ( use_msi < 0 )
         use_msi = !(acpi_gbl_FADT.boot_flags & ACPI_FADT_NO_MSI);
     if ( !use_msi )
         return;
-
-    register_cpu_notifier(&msi_cpu_nfb);
-    if ( msi_cpu_callback(&msi_cpu_nfb, CPU_UP_PREPARE, NULL) &
-         NOTIFY_STOP_MASK )
-        BUG();
 }
 
 static void dump_msi(unsigned char key)

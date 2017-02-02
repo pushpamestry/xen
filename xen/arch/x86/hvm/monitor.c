@@ -78,8 +78,7 @@ static inline unsigned long gfn_of_rip(unsigned long rip)
     struct segment_register sreg;
     uint32_t pfec = PFEC_page_present | PFEC_insn_fetch;
 
-    hvm_get_segment_register(curr, x86_seg_ss, &sreg);
-    if ( sreg.attr.fields.dpl == 3 )
+    if ( hvm_get_cpl(curr) == 3 )
         pfec |= PFEC_user_mode;
 
     hvm_get_segment_register(curr, x86_seg_cs, &sreg);
@@ -148,6 +147,20 @@ int hvm_monitor_cpuid(unsigned long insn_length, unsigned int leaf,
     req.u.cpuid.subleaf = subleaf;
 
     return monitor_traps(curr, 1, &req);
+}
+
+void hvm_monitor_interrupt(unsigned int vector, unsigned int type,
+                           unsigned int err, uint64_t cr2)
+{
+    vm_event_request_t req = {
+        .reason = VM_EVENT_REASON_INTERRUPT,
+        .u.interrupt.x86.vector = vector,
+        .u.interrupt.x86.type = type,
+        .u.interrupt.x86.error_code = err,
+        .u.interrupt.x86.cr2 = cr2,
+    };
+
+    monitor_traps(current, 1, &req);
 }
 
 /*

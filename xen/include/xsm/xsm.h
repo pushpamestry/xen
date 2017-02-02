@@ -162,11 +162,6 @@ struct xsm_operations {
 #ifdef CONFIG_X86
     int (*do_mca) (void);
     int (*shadow_control) (struct domain *d, uint32_t op);
-    int (*hvm_set_pci_intx_level) (struct domain *d);
-    int (*hvm_set_isa_irq_level) (struct domain *d);
-    int (*hvm_set_pci_link_route) (struct domain *d);
-    int (*hvm_inject_msi) (struct domain *d);
-    int (*hvm_ioreq_server) (struct domain *d, int op);
     int (*mem_sharing_op) (struct domain *d, struct domain *cd, int op);
     int (*apic) (struct domain *d, int cmd);
     int (*memtype) (uint32_t access);
@@ -184,6 +179,7 @@ struct xsm_operations {
     int (*ioport_permission) (struct domain *d, uint32_t s, uint32_t e, uint8_t allow);
     int (*ioport_mapping) (struct domain *d, uint32_t s, uint32_t e, uint8_t allow);
     int (*pmu_op) (struct domain *d, unsigned int op);
+    int (*dm_op) (struct domain *d);
 #endif
     int (*xen_version) (uint32_t cmd);
 };
@@ -635,31 +631,6 @@ static inline int xsm_shadow_control (xsm_default_t def, struct domain *d, uint3
     return xsm_ops->shadow_control(d, op);
 }
 
-static inline int xsm_hvm_set_pci_intx_level (xsm_default_t def, struct domain *d)
-{
-    return xsm_ops->hvm_set_pci_intx_level(d);
-}
-
-static inline int xsm_hvm_set_isa_irq_level (xsm_default_t def, struct domain *d)
-{
-    return xsm_ops->hvm_set_isa_irq_level(d);
-}
-
-static inline int xsm_hvm_set_pci_link_route (xsm_default_t def, struct domain *d)
-{
-    return xsm_ops->hvm_set_pci_link_route(d);
-}
-
-static inline int xsm_hvm_inject_msi (xsm_default_t def, struct domain *d)
-{
-    return xsm_ops->hvm_inject_msi(d);
-}
-
-static inline int xsm_hvm_ioreq_server (xsm_default_t def, struct domain *d, int op)
-{
-    return xsm_ops->hvm_ioreq_server(d, op);
-}
-
 static inline int xsm_mem_sharing_op (xsm_default_t def, struct domain *d, struct domain *cd, int op)
 {
     return xsm_ops->mem_sharing_op(d, cd, op);
@@ -720,6 +691,11 @@ static inline int xsm_ioport_mapping (xsm_default_t def, struct domain *d, uint3
 static inline int xsm_pmu_op (xsm_default_t def, struct domain *d, unsigned int op)
 {
     return xsm_ops->pmu_op(d, op);
+}
+
+static inline int xsm_dm_op(xsm_default_t def, struct domain *d)
+{
+    return xsm_ops->dm_op(d);
 }
 
 #endif /* CONFIG_X86 */

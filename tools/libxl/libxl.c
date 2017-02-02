@@ -4018,6 +4018,12 @@ out:
 
 /******************************************************************************/
 
+/*
+ * Set the maximum memory size of the domain in the hypervisor. There is no
+ * change of the current memory size involved. The specified memory size can
+ * even be above the configured maxmem size of the domain, but the related
+ * Xenstore entry memory/static-max isn't modified!
+ */
 int libxl_domain_setmaxmem(libxl_ctx *ctx, uint32_t domid, uint64_t max_memkb)
 {
     GC_INIT(ctx);
@@ -4307,6 +4313,13 @@ retry_transaction:
 
     libxl__xs_printf(gc, t, GCSPRINTF("%s/memory/target", dompath),
                      "%"PRIu64, new_target_memkb);
+
+    r = xc_domain_getinfolist(ctx->xch, domid, 1, &info);
+    if (r != 1 || info.domain != domid) {
+        abort_transaction = 1;
+        rc = ERROR_FAIL;
+        goto out;
+    }
 
     libxl_dominfo_init(&ptr);
     xcinfo2xlinfo(ctx, &info, &ptr);
@@ -5148,7 +5161,6 @@ int libxl_set_vcpuonline(libxl_ctx *ctx, uint32_t domid, libxl_bitmap *cpumap)
         switch (libxl__device_model_version_running(gc, domid)) {
         case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL:
         case LIBXL_DEVICE_MODEL_VERSION_NONE:
-            rc = libxl__set_vcpuonline_xenstore(gc, domid, cpumap, &info);
             break;
         case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
             rc = libxl__set_vcpuonline_qmp(gc, domid, cpumap, &info);
@@ -5158,11 +5170,14 @@ int libxl_set_vcpuonline(libxl_ctx *ctx, uint32_t domid, libxl_bitmap *cpumap)
         }
         break;
     case LIBXL_DOMAIN_TYPE_PV:
-        rc = libxl__set_vcpuonline_xenstore(gc, domid, cpumap, &info);
         break;
     default:
         rc = ERROR_INVAL;
     }
+
+    if (!rc)
+        rc = libxl__set_vcpuonline_xenstore(gc, domid, cpumap, &info);
+
 out:
     libxl_dominfo_dispose(&info);
     GC_FREE;
@@ -6842,6 +6857,17 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
             libxl__get_targetmem_fudge(gc, &d_config->b_info);
 
         d_config->b_info.max_memkb = max_memkb;
+    }
+
+    /* Scheduler params */
+    {
+        libxl_domain_sched_params_dispose(&d_config->b_info.sched_params);
+        rc = libxl_domain_sched_params_get(ctx, domid,
+                                           &d_config->b_info.sched_params);
+        if (rc) {
+            LOGD(ERROR, domid, "Fail to get scheduler parameters");
+            goto out;
+        }
     }
 
     /* Devices: disk, nic, vtpm, pcidev etc. */

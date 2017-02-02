@@ -57,7 +57,17 @@
 #define set_xen_guest_handle(hnd, val) set_xen_guest_handle_raw(hnd, val)
 
 #if defined(__i386__)
+# ifdef __XEN__
+__DeFiNe__ __DECL_REG_LO8(which) uint32_t _e ## which ## x
+__DeFiNe__ __DECL_REG_LO16(name) union { uint32_t e ## name, _e ## name; }
+# endif
 #include "xen-x86_32.h"
+# ifdef __XEN__
+__UnDeF__ __DECL_REG_LO8
+__UnDeF__ __DECL_REG_LO16
+__DeFiNe__ __DECL_REG_LO8(which) _e ## which ## x
+__DeFiNe__ __DECL_REG_LO16(name) _e ## name
+# endif
 #elif defined(__x86_64__)
 #include "xen-x86_64.h"
 #endif
@@ -291,6 +301,13 @@ struct xen_arch_domainconfig {
                                      XEN_X86_EMU_PIT)
     uint32_t emulation_flags;
 };
+
+/* Location of online VCPU bitmap. */
+#define XEN_ACPI_CPU_MAP             0xaf00
+#define XEN_ACPI_CPU_MAP_LEN         ((HVM_MAX_VCPUS + 7) / 8)
+
+/* GPE0 bit set during CPU hotplug */
+#define XEN_ACPI_GPE0_CPUHP_BIT      2
 #endif
 
 #endif /* !__ASSEMBLY__ */

@@ -401,6 +401,16 @@ for bytes.
 The mem-max value may not correspond to the actual memory used in the
 domain, as it may balloon down its memory to give more back to the OS.
 
+The value given just sets the memory amount the domain is allowed to allocate
+in the hypervisor. It can't be set lower than the current reservation, but
+it is allowed to be higher than the configured maximum memory size of the
+domain (B<maxmem> parameter in the domain's configuration). Using B<xl mem-max>
+to set the maximum memory above the initial B<maxmem> value will not allow the
+additional memory to be used via B<xl mem-set>. The initial B<maxmem> value is
+still used as an upper limit for B<xl mem-set>.
+
+The domain is not receiving any signal regarding the changed memory limit.
+
 =item B<mem-set> I<domain-id> I<mem>
 
 Set the domain's used memory using the balloon driver; append 't' for
@@ -1315,7 +1325,7 @@ The domain id of the guest domain that the device will be attached to.
 
 A disc specification in the same format used for the B<disk> variable in
 the domain config file. See
-L<http://xenbits.xen.org/docs/unstable/misc/xl-disk-configuration.txt>.
+L<xl-disk-configuration(5)>.
 
 =back
 
@@ -1354,7 +1364,7 @@ How the device should be presented to the guest domain; for example "hdc".
 
 the target path in the backend domain (usually domain 0) to be
 exported; Can be a block device or a file etc. See B<target> in
-F<docs/misc/xl-disk-configuration.txt>.
+L<xl-disk-configuration(5)>.
 
 =back
 
@@ -1383,7 +1393,7 @@ How the device should be presented to the guest domain; for example "hdc".
 Creates a new network device in the domain specified by I<domain-id>.
 I<network-device> describes the device to attach, using the same format as the
 B<vif> string in the domain config file. See L<xl.cfg> and
-L<http://xenbits.xen.org/docs/unstable/misc/xl-network-configuration.html>
+L<xl-network-configuration(5)>
 for more informations.
 
 Note that only attaching PV network interface is supported.
@@ -1796,12 +1806,11 @@ Transcendent Memory.
 
 The following man pages:
 
-L<xl.cfg>(5), L<xlcpupool.cfg>(5), B<xentop>(1)
+L<xl.cfg>(5), L<xlcpupool.cfg>(5), L<xentop>(1), L<xl-disk-configuration(5)>
+L<xl-network-configuration(5)>
 
 And the following documents on the xen.org website:
 
-L<http://xenbits.xen.org/docs/unstable/misc/xl-network-configuration.html>
-L<http://xenbits.xen.org/docs/unstable/misc/xl-disk-configuration.txt>
 L<http://xenbits.xen.org/docs/unstable/misc/xsm-flask.txt>
 L<http://xenbits.xen.org/docs/unstable/misc/xl-psr.html>
 

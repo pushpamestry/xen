@@ -78,7 +78,7 @@ void send_invalidate_req(void)
         gprintk(XENLOG_ERR, "Unsuccessful map-cache invalidate\n");
 }
 
-int handle_mmio(void)
+bool hvm_emulate_one_insn(hvm_emulate_validate_t *validate)
 {
     struct hvm_emulate_ctxt ctxt;
     struct vcpu *curr = current;
@@ -87,7 +87,7 @@ int handle_mmio(void)
 
     ASSERT(!is_pvh_vcpu(curr));
 
-    hvm_emulate_init_once(&ctxt, guest_cpu_user_regs());
+    hvm_emulate_init_once(&ctxt, validate, guest_cpu_user_regs());
 
     rc = hvm_emulate_one(&ctxt);
 
@@ -100,22 +100,21 @@ int handle_mmio(void)
     {
     case X86EMUL_UNHANDLEABLE:
         hvm_dump_emulation_state(XENLOG_G_WARNING "MMIO", &ctxt);
-        return 0;
+        return false;
+
     case X86EMUL_EXCEPTION:
         if ( ctxt.ctxt.event_pending )
             hvm_inject_event(&ctxt.ctxt.event);
-        break;
-    default:
         break;
     }
 
     hvm_emulate_writeback(&ctxt);
 
-    return 1;
+    return true;
 }
 
-int handle_mmio_with_translation(unsigned long gla, unsigned long gpfn,
-                                 struct npfec access)
+bool handle_mmio_with_translation(unsigned long gla, unsigned long gpfn,
+                                  struct npfec access)
 {
     struct hvm_vcpu_io *vio = &current->arch.hvm_vcpu.hvm_io;
 
@@ -127,7 +126,7 @@ int handle_mmio_with_translation(unsigned long gla, unsigned long gpfn,
     return handle_mmio();
 }
 
-int handle_pio(uint16_t port, unsigned int size, int dir)
+bool handle_pio(uint16_t port, unsigned int size, int dir)
 {
     struct vcpu *curr = current;
     struct hvm_vcpu_io *vio = &curr->arch.hvm_vcpu.hvm_io;
@@ -137,7 +136,7 @@ int handle_pio(uint16_t port, unsigned int size, int dir)
     ASSERT((size - 1) < 4 && size != 3);
 
     if ( dir == IOREQ_WRITE )
-        data = guest_cpu_user_regs()->eax;
+        data = guest_cpu_user_regs()->_eax;
 
     rc = hvmemul_do_pio_buffer(port, size, dir, &data);
 
@@ -155,19 +154,20 @@ int handle_pio(uint16_t port, unsigned int size, int dir)
                 memcpy(&guest_cpu_user_regs()->rax, &data, size);
         }
         break;
+
     case X86EMUL_RETRY:
         /* We should not advance RIP/EIP if the domain is shutting down */
         if ( curr->domain->is_shutting_down )
-            return 0;
-
+            return false;
         break;
+
     default:
         gdprintk(XENLOG_ERR, "Weird HVM ioemulation status %d.\n", rc);
         domain_crash(curr->domain);
-        break;
+        return false;
     }
 
-    return 1;
+    return true;
 }
 
 static bool_t dpci_portio_accept(const struct hvm_io_handler *handler,

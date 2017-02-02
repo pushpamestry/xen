@@ -120,6 +120,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);
 #define __HYPERVISOR_tmem_op              38
 #define __HYPERVISOR_xc_reserved_op       39 /* reserved for XenClient */
 #define __HYPERVISOR_xenpmu_op            40
+#define __HYPERVISOR_dm_op                41
 
 /* Architecture-specific hypercall definitions. */
 #define __HYPERVISOR_arch_0               48
@@ -764,7 +765,7 @@ typedef struct shared_info shared_info_t;
  *         (may be omitted)
  *      c. list of allocated page frames [mfn_list, nr_pages]
  *         (unless relocated due to XEN_ELFNOTE_INIT_P2M)
- *      d. start_info_t structure        [register ESI (x86)]
+ *      d. start_info_t structure        [register rSI (x86)]
  *         in case of dom0 this page contains the console info, too
  *      e. unless dom0: xenstore ring page
  *      f. unless dom0: console ring page

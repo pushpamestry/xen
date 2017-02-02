@@ -174,7 +174,6 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
 
     if ( is_hvm_domain(d) && !(pfec & PFEC_user_mode) )
     {
-        struct segment_register seg;
         const struct cpu_user_regs *regs = guest_cpu_user_regs();
 
         /* SMEP: kernel-mode instruction fetches from user-mode mappings
@@ -186,8 +185,6 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
         switch ( v->arch.smap_check_policy )
         {
         case SMAP_CHECK_HONOR_CPL_AC:
-            hvm_get_segment_register(v, x86_seg_ss, &seg);
-
             /*
              * SMAP: kernel-mode data accesses from user-mode mappings
              * should fault.
@@ -199,8 +196,7 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
              *   - Page fault in kernel mode
              */
             smap = hvm_smap_enabled(v) &&
-                   ((seg.attr.fields.dpl == 3) ||
-                    !(regs->eflags & X86_EFLAGS_AC));
+                   ((hvm_get_cpl(v) == 3) || !(regs->_eflags & X86_EFLAGS_AC));
             break;
         case SMAP_CHECK_ENABLED:
             smap = hvm_smap_enabled(v);
@@ -396,21 +392,21 @@ set_ad:
     {
 #if GUEST_PAGING_LEVELS == 4 /* 64-bit only... */
         if ( set_ad_bits(l4p + guest_l4_table_offset(va), &gw->l4e, 0) )
-            paging_mark_dirty(d, mfn_x(gw->l4mfn));
+            paging_mark_dirty(d, gw->l4mfn);
         if ( set_ad_bits(l3p + guest_l3_table_offset(va), &gw->l3e,
                          (pse1G && (pfec & PFEC_write_access))) )
-            paging_mark_dirty(d, mfn_x(gw->l3mfn));
+            paging_mark_dirty(d, gw->l3mfn);
 #endif
         if ( !pse1G ) 
         {
             if ( set_ad_bits(l2p + guest_l2_table_offset(va), &gw->l2e,
                              (pse2M && (pfec & PFEC_write_access))) )
-                paging_mark_dirty(d, mfn_x(gw->l2mfn));            
+                paging_mark_dirty(d, gw->l2mfn);
             if ( !pse2M ) 
             {
                 if ( set_ad_bits(l1p + guest_l1_table_offset(va), &gw->l1e, 
                                  (pfec & PFEC_write_access)) )
-                    paging_mark_dirty(d, mfn_x(gw->l1mfn));
+                    paging_mark_dirty(d, gw->l1mfn);
             }
         }
     }

@@ -41,7 +41,6 @@ enum {
 #define DEF_MAX_BASE 0x0000000du
 #define DEF_MAX_INTELEXT  0x80000008u
 #define DEF_MAX_AMDEXT    0x8000001cu
-#define COMMON_1D CPUID_COMMON_1D_FEATURES
 
 int xc_get_cpu_levelling_caps(xc_interface *xch, uint32_t *caps)
 {
@@ -400,125 +399,6 @@ static void intel_xc_cpuid_policy(xc_interface *xch,
     }
 }
 
-/* XSTATE bits in XCR0. */
-#define X86_XCR0_X87    (1ULL <<  0)
-#define X86_XCR0_SSE    (1ULL <<  1)
-#define X86_XCR0_AVX    (1ULL <<  2)
-#define X86_XCR0_BNDREG (1ULL <<  3)
-#define X86_XCR0_BNDCSR (1ULL <<  4)
-#define X86_XCR0_OPMASK (1ULL <<  5)
-#define X86_XCR0_ZMM    (1ULL <<  6)
-#define X86_XCR0_HI_ZMM (1ULL <<  7)
-#define X86_XCR0_PKRU   (1ULL <<  9)
-#define X86_XCR0_LWP    (1ULL << 62)
-
-#define X86_XSS_MASK    (0) /* No XSS states supported yet. */
-
-/* Per-component subleaf flags. */
-#define XSTATE_XSS      (1ULL <<  0)
-#define XSTATE_ALIGN64  (1ULL <<  1)
-
-/* Configure extended state enumeration leaves (0x0000000D for xsave) */
-static void xc_cpuid_config_xsave(xc_interface *xch,
-                                  const struct cpuid_domain_info *info,
-                                  const unsigned int *input, unsigned int *regs)
-{
-    uint64_t guest_xfeature_mask;
-
-    if ( info->xfeature_mask == 0 ||
-         !test_bit(X86_FEATURE_XSAVE, info->featureset) )
-    {
-        regs[0] = regs[1] = regs[2] = regs[3] = 0;
-        return;
-    }
-
-    guest_xfeature_mask = X86_XCR0_SSE | X86_XCR0_X87;
-
-    if ( test_bit(X86_FEATURE_AVX, info->featureset) )
-        guest_xfeature_mask |= X86_XCR0_AVX;
-
-    if ( test_bit(X86_FEATURE_MPX, info->featureset) )
-        guest_xfeature_mask |= X86_XCR0_BNDREG | X86_XCR0_BNDCSR;
-
-    if ( test_bit(X86_FEATURE_AVX512F, info->featureset) )
-        guest_xfeature_mask |= X86_XCR0_OPMASK | X86_XCR0_ZMM | X86_XCR0_HI_ZMM;
-
-    if ( test_bit(X86_FEATURE_PKU, info->featureset) )
-        guest_xfeature_mask |= X86_XCR0_PKRU;
-
-    if ( test_bit(X86_FEATURE_LWP, info->featureset) )
-        guest_xfeature_mask |= X86_XCR0_LWP;
-
-    /*
-     * In the common case, the toolstack will have queried Xen for the maximum
-     * available featureset, and guest_xfeature_mask should not able to be
-     * calculated as being greater than the host limit, info->xfeature_mask.
-     *
-     * Nothing currently prevents a toolstack (or an optimistic user) from
-     * purposefully trying to select a larger-than-available xstate set.
-     *
-     * To avoid the domain dying with an unexpected fault, clamp the
-     * calculated mask to the host limit.  Future development work will remove
-     * this possibility, when Xen fully audits the complete cpuid polcy set
-     * for a domain.
-     */
-    guest_xfeature_mask &= info->xfeature_mask;
-
-    switch ( input[1] )
-    {
-    case 0:
-        /* EAX: low 32bits of xfeature_enabled_mask */
-        regs[0] = (uint32_t)guest_xfeature_mask;
-        /* EDX: high 32bits of xfeature_enabled_mask */
-        regs[3] = guest_xfeature_mask >> 32;
-        /* ECX: max size required by all HW features */
-        {
-            unsigned int _input[2] = {0xd, 0x0}, _regs[4];
-            regs[2] = 0;
-            for ( _input[1] = 2; _input[1] <= 62; _input[1]++ )
-            {
-                cpuid(_input, _regs);
-                if ( (_regs[0] + _regs[1]) > regs[2] )
-                    regs[2] = _regs[0] + _regs[1];
-            }
-        }
-        /* EBX: max size required by enabled features.
-         * This register contains a dynamic value, which varies when a guest
-         * enables or disables XSTATE features (via xsetbv). The default size
-         * after reset is 576. */
-        regs[1] = 512 + 64; /* FP/SSE + XSAVE.HEADER */
-        break;
-
-    case 1: /* leaf 1 */
-        regs[0] = info->featureset[featureword_of(X86_FEATURE_XSAVEOPT)];
-        regs[1] = 0;
-
-        if ( test_bit(X86_FEATURE_XSAVES, info->featureset) )
-        {
-            regs[2] = (uint32_t)(guest_xfeature_mask & X86_XSS_MASK);
-            regs[3] = (guest_xfeature_mask & X86_XSS_MASK) >> 32;
-        }
-        else
-            regs[2] = regs[3] = 0;
-        break;
-
-    case 2 ... 62: /* per-component sub-leaves */
-        if ( !(guest_xfeature_mask & (1ULL << input[1])) )
-        {
-            regs[0] = regs[1] = regs[2] = regs[3] = 0;
-            break;
-        }
-        /* Don't touch EAX, EBX. Also cleanup ECX and EDX */
-        regs[2] &= XSTATE_XSS | XSTATE_ALIGN64;
-        regs[3] = 0;
-        break;
-
-    default:
-        regs[0] = regs[1] = regs[2] = regs[3] = 0;
-        break;
-    }
-}
-
 static void xc_cpuid_hvm_policy(xc_interface *xch,
                                 const struct cpuid_domain_info *info,
                                 const unsigned int *input, unsigned int *regs)
@@ -558,8 +438,12 @@ static void xc_cpuid_hvm_policy(xc_interface *xch,
         regs[0] = 0;
         break;
 
-    case 0x0000000d:
-        xc_cpuid_config_xsave(xch, info, input, regs);
+    case 0x0000000d: /* Xen automatically calculates almost everything. */
+        if ( input[1] == 1 )
+            regs[0] = info->featureset[featureword_of(X86_FEATURE_XSAVEOPT)];
+        else
+            regs[0] = 0;
+        regs[1] = regs[2] = regs[3] = 0;
         break;
 
     case 0x80000000:
@@ -595,6 +479,8 @@ static void xc_cpuid_hvm_policy(xc_interface *xch,
     case 0x80000005: /* AMD L1 cache/TLB info (dumped by Intel policy) */
     case 0x80000006: /* AMD L2/3 cache/TLB info ; Intel L2 cache features */
     case 0x8000000a: /* AMD SVM feature bits */
+    case 0x80000019: /* AMD 1G TLB */
+    case 0x8000001a: /* AMD perf hints */
     case 0x8000001c: /* AMD lightweight profiling */
         break;
 
@@ -615,6 +501,11 @@ static void xc_cpuid_pv_policy(xc_interface *xch,
 {
     switch ( input[0] )
     {
+    case 0x00000000:
+        if ( regs[0] > DEF_MAX_BASE )
+            regs[0] = DEF_MAX_BASE;
+        break;
+
     case 0x00000001:
     {
         /* Host topology exposed to PV guest.  Provide host value. */
@@ -651,9 +542,23 @@ static void xc_cpuid_pv_policy(xc_interface *xch,
         regs[0] = 0;
         break;
 
-    case 0x0000000d:
-        xc_cpuid_config_xsave(xch, info, input, regs);
+    case 0x0000000d: /* Xen automatically calculates almost everything. */
+        if ( input[1] == 1 )
+            regs[0] = info->featureset[featureword_of(X86_FEATURE_XSAVEOPT)];
+        else
+            regs[0] = 0;
+        regs[1] = regs[2] = regs[3] = 0;
         break;
+
+    case 0x80000000:
+    {
+        unsigned int max = info->vendor == VENDOR_AMD
+            ? DEF_MAX_AMDEXT : DEF_MAX_INTELEXT;
+
+        if ( regs[0] > max )
+            regs[0] = max;
+        break;
+    }
 
     case 0x80000001:
     {
@@ -808,24 +713,6 @@ static void sanitise_featureset(struct cpuid_domain_info *info)
             disabled_features[i] &= ~dfs[i];
         }
     }
-
-    switch ( info->vendor )
-    {
-    case VENDOR_INTEL:
-        /* Intel clears the common bits in e1d. */
-        info->featureset[featureword_of(X86_FEATURE_SYSCALL)] &= ~COMMON_1D;
-        break;
-
-    case VENDOR_AMD:
-        /* AMD duplicates the common bits between 1d and e1d. */
-        info->featureset[featureword_of(X86_FEATURE_SYSCALL)] =
-            ((info->featureset[featureword_of(X86_FEATURE_FPU)] & COMMON_1D) |
-             (info->featureset[featureword_of(X86_FEATURE_SYSCALL)] & ~COMMON_1D));
-        break;
-
-    default:
-        break;
-    }
 }
 
 int xc_cpuid_apply_policy(xc_interface *xch, domid_t domid,
@@ -876,17 +763,15 @@ int xc_cpuid_apply_policy(xc_interface *xch, domid_t domid,
                 continue;
         }
 
-        /* XSAVE information, subleaves 0-63. */
-        if ( (input[0] == 0xd) && (input[1]++ < 63) )
-            continue;
-
         input[0]++;
         if ( !(input[0] & 0x80000000u) && (input[0] > base_max ) )
             input[0] = 0x80000000u;
 
         input[1] = XEN_CPUID_INPUT_UNUSED;
-        if ( (input[0] == 4) || (input[0] == 7) || (input[0] == 0xd) )
+        if ( (input[0] == 4) || (input[0] == 7) )
             input[1] = 0;
+        else if ( input[0] == 0xd )
+            input[1] = 1; /* Xen automatically calculates almost everything. */
 
         if ( (input[0] & 0x80000000u) && (input[0] > ext_max) )
             break;

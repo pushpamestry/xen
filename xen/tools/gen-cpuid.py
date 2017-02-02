@@ -29,6 +29,7 @@ class State(object):
         self.pv = []
         self.hvm_shadow = []
         self.hvm_hap = []
+        self.bitfields = [] # Text to declare named bitfields in C
 
 def parse_definitions(state):
     """
@@ -128,16 +129,7 @@ def crunch_numbers(state):
     common_1d = (FPU, VME, DE, PSE, TSC, MSR, PAE, MCE, CX8, APIC,
                  MTRR, PGE, MCA, CMOV, PAT, PSE36, MMX, FXSR)
 
-    # All known features.  Duplicate the common features in e1d
-    e1d_base = SYSCALL & ~31
-    state.known = featureset_to_uint32s(
-        state.names.keys() + [ e1d_base + (x % 32) for x in common_1d ],
-        nr_entries)
-
-    # Fold common back into names
-    for f in common_1d:
-        state.names[e1d_base + (f % 32)] = "E1D_" + state.names[f]
-
+    state.known = featureset_to_uint32s(state.names.keys(), nr_entries)
     state.common_1d = featureset_to_uint32s(common_1d, 1)[0]
     state.special = featureset_to_uint32s(state.raw_special, nr_entries)
     state.pv = featureset_to_uint32s(state.raw_pv, nr_entries)
@@ -247,15 +239,17 @@ def crunch_numbers(state):
         # standard 3DNow in the earlier K6 processors.
         _3DNOW: [_3DNOWEXT],
 
-        # This is just the dependency between AVX512 and AVX2 of XSTATE feature flags.
-        # If want to use AVX512, AVX2 must be supported and enabled.
+        # This is just the dependency between AVX512 and AVX2 of XSTATE
+        # feature flags.  If want to use AVX512, AVX2 must be supported and
+        # enabled.
         AVX2: [AVX512F],
 
-        # AVX512F is taken to mean hardware support for EVEX encoded instructions,
-        # 512bit registers, and the instructions themselves. All further AVX512 features
-        # are built on top of AVX512F
+        # AVX512F is taken to mean hardware support for EVEX encoded
+        # instructions, 512bit registers, and the instructions themselves. All
+        # further AVX512 features are built on top of AVX512F
         AVX512F: [AVX512DQ, AVX512IFMA, AVX512PF, AVX512ER, AVX512CD,
-                  AVX512BW, AVX512VL, AVX512VBMI, AVX512_4VNNIW, AVX512_4FMAPS],
+                  AVX512BW, AVX512VL, AVX512VBMI, AVX512_4VNNIW,
+                  AVX512_4FMAPS, AVX512_VPOPCNTDQ],
     }
 
     deep_features = tuple(sorted(deps.keys()))
@@ -290,6 +284,27 @@ def crunch_numbers(state):
 
     for k, v in state.deep_deps.iteritems():
         state.deep_deps[k] = featureset_to_uint32s(v, nr_entries)
+
+    # Calculate the bitfield name declarations
+    for word in xrange(nr_entries):
+
+        names = []
+        for bit in xrange(32):
+
+            name = state.names.get(word * 32 + bit, "")
+
+            # Prepend an underscore if the name starts with a digit.
+            if name and name[0] in "0123456789":
+                name = "_" + name
+
+            # Don't generate names for features fast-forwarded from other
+            # state
+            if name in ("APIC", "OSXSAVE", "OSPKE"):
+                name = ""
+
+            names.append(name.lower())
+
+        state.bitfields.append("bool " + ":1, ".join(names) + ":1")
 
 
 def write_results(state):
@@ -344,6 +359,15 @@ def write_results(state):
     state.output.write(
 """}
 
+""")
+
+    for idx, text in enumerate(state.bitfields):
+        state.output.write(
+            "#define CPUID_BITFIELD_%d \\\n    %s\n\n"
+            % (idx, text))
+
+    state.output.write(
+"""
 #endif /* __XEN_X86__FEATURESET_DATA__ */
 """)
 

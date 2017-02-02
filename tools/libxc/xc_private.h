@@ -366,9 +366,6 @@ void bitmap_byte_to_64(uint64_t *lp, const uint8_t *bp, int nbits);
 /* Optionally flush file to disk and discard page cache */
 void discard_file_cache(xc_interface *xch, int fd, int flush);
 
-int xc_domain_cacheflush(xc_interface *xch, uint32_t domid,
-			 xen_pfn_t start_pfn, xen_pfn_t nr_pfns);
-
 #define MAX_MMU_UPDATES 1024
 struct xc_mmu {
     mmu_update_t updates[MAX_MMU_UPDATES];
@@ -421,6 +418,8 @@ int xc_vm_event_control(xc_interface *xch, domid_t domain_id, unsigned int op,
  */
 void *xc_vm_event_enable(xc_interface *xch, domid_t domain_id, int param,
                          uint32_t *port);
+
+int do_dm_op(xc_interface *xch, domid_t domid, unsigned int nr_bufs, ...);
 
 #endif /* __XC_PRIVATE_H__ */
 
