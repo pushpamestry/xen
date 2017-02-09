@@ -1,1 +1,1 @@
-obj-y += coproc_xxx.o
+obj-y += coproc_xxx.o gx6xxx.o
