@@ -165,8 +165,50 @@ static void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
 #define gx6xxx_print_reg(a, b, c) {}
 #endif
 
-static int gx6xxx_read(struct vcpu *v, mmio_info_t *info,
-                       register_t *r, void *priv)
+static inline uint32_t gx6xxx_read32(struct coproc_device *coproc,
+                                     uint32_t offset)
+{
+#ifdef GX6XXX_DEBUG
+    uint32_t val = readl((char *)coproc->mmios[0].base + offset);
+
+    gx6xxx_print_reg(__FUNCTION__, offset, val);
+    return val;
+#else
+    return readl((char *)coproc->mmios[0].base + offset);
+#endif
+}
+
+static inline void gx6xxx_write32(struct coproc_device *coproc,
+                                  uint32_t offset, uint32_t val)
+{
+    gx6xxx_print_reg(__FUNCTION__, offset, val);
+    writel(val, (char *)coproc->mmios[0].base + offset);
+}
+
+static inline uint64_t gx6xxx_read64(struct coproc_device *coproc,
+                                     uint32_t offset)
+{
+#ifdef GX6XXX_DEBUG
+    uint64_t val = readq((char *)coproc->mmios[0].base + offset);
+
+    gx6xxx_print_reg(__FUNCTION__, offset, val & 0xffffffff);
+    gx6xxx_print_reg(__FUNCTION__, offset + 4, val >> 32);
+    return val;
+#else
+    return readq((char *)coproc->mmios[0].base + offset);
+#endif
+}
+
+static inline void gx6xxx_write64(struct coproc_device *coproc,
+                                  uint32_t offset, uint64_t val)
+{
+    gx6xxx_print_reg(__FUNCTION__, offset, val & 0xffffffff);
+    gx6xxx_print_reg(__FUNCTION__, offset + 4, val >> 32);
+    writeq(val, (char *)coproc->mmios[0].base + offset);
+}
+
+static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
+                            register_t *r, void *priv)
 {
     struct mmio *mmio = priv;
     struct vcoproc_rw_context ctx;
@@ -194,8 +236,8 @@ out:
     return 1;
 }
 
-static int gx6xxx_write(struct vcpu *v, mmio_info_t *info,
-                        register_t r, void *priv)
+static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
+                             register_t r, void *priv)
 {
     struct mmio *mmio = priv;
     struct vcoproc_rw_context ctx;
@@ -240,8 +282,8 @@ static void gx6xxx_irq_handler(int irq, void *dev,
 }
 
 static const struct mmio_handler_ops gx6xxx_mmio_handler = {
-    .read = gx6xxx_read,
-    .write = gx6xxx_write,
+    .read = gx6xxx_mmio_read,
+    .write = gx6xxx_mmio_write,
 };
 
 static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
