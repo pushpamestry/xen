@@ -37,10 +37,15 @@
 
 struct vgx6xxx_info
 {
-    /* This is the current IRQ status reported/updated to/from domains.
-     * Set on real IRQ from GPU.
+    /* This is the current IRQ status register value reported/updated
+     * to/from domains. Set on real IRQ from GPU, low 32-bits
      */
     uint32_t irq_status;
+    /* Current value of the soft reset register, used to determine
+     * when FW starts to run
+     */
+    uint64_t cr_soft_reset_lo;
+    uint64_t cr_soft_reset_hi;
     /* set if scheduler has been started for this vcoproc */
     bool scheduler_started;
 
@@ -49,6 +54,7 @@ struct vgx6xxx_info
 struct gx6xxx_info
 {
     struct vcoproc_instance *curr;
+    /* FIXME: IRQ registers are 64-bit, but only low 32-bits are used */
     uint32_t *reg_irq_status;
     uint32_t *reg_irq_clear;
 };
@@ -78,6 +84,9 @@ struct gx6xxx_info
 #define RGX_CR_BIF_CAT_BASE0                          (0x1200U)
 #define RGX_CR_SLC_CTRL_MISC                          (0x3800U)
 #define RGX_CR_AXI_ACE_LITE_CONFIGURATION             (0x38C0U)
+
+#define REG_LO32(a) ( (a) )
+#define REG_HI32(a) ( (a) + sizeof(uint32_t) )
 
 #ifdef GX6XXX_DEBUG
 static void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
@@ -207,17 +216,40 @@ static inline void gx6xxx_write64(struct coproc_device *coproc,
     writeq(val, (char *)coproc->mmios[0].base + offset);
 }
 
+static void gx6xxx_check_soft_reset(uint32_t offset, uint32_t val,
+                                    struct vcoproc_instance *vcoproc)
+{
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+
+    if ( unlikely(offset == REG_LO32(RGX_CR_SOFT_RESET)) )
+    {
+        vinfo->cr_soft_reset_lo = val;
+    }
+    if ( unlikely(offset == REG_HI32(RGX_CR_SOFT_RESET)) )
+    {
+        vinfo->cr_soft_reset_hi = val;
+    }
+    /* start condition is all zeros in the RGX_CR_SOFT_RESET register */
+    if ( unlikely(!vinfo->cr_soft_reset_lo && !vinfo->cr_soft_reset_hi) )
+    {
+        if ( likely(!vinfo->scheduler_started) )
+        {
+            vinfo->scheduler_started = true;
+            vcoproc_scheduler_vcoproc_wake(vcoproc->coproc->sched, vcoproc);
+        }
+    }
+}
+
 static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
                             register_t *r, void *priv)
 {
     struct mmio *mmio = priv;
     struct vcoproc_rw_context ctx;
-    struct vgx6xxx_info *vinfo;
     unsigned long flags;
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
     spin_lock_irqsave(&ctx.coproc->vcoprocs_lock, flags);
-    if (ctx.offset == RGXFW_CR_IRQ_STATUS) {
+    if ( likely(ctx.offset == RGXFW_CR_IRQ_STATUS) ) {
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 
         *r = vinfo->irq_status;
@@ -227,12 +259,6 @@ static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
     gx6xxx_print_reg(__FUNCTION__, ctx.offset, *r);
-    vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
-    if ( unlikely(!vinfo->scheduler_started) ) {
-        /* TODO: find condition to start the scheduler */
-        vinfo->scheduler_started = true;
-        vcoproc_scheduler_vcoproc_wake(ctx.coproc->sched, ctx.vcoproc);
-    }
     return 1;
 }
 
@@ -255,6 +281,8 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
     gx6xxx_print_reg(__FUNCTION__, ctx.offset, r);
+    /* check if need to start scheduling */
+    gx6xxx_check_soft_reset(ctx.offset, r, ctx.vcoproc);
     return 1;
 }
 
