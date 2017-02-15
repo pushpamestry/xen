@@ -41,6 +41,8 @@ struct vgx6xxx_info
      * Set on real IRQ from GPU.
      */
     uint32_t irq_status;
+    /* set if scheduler has been started for this vcoproc */
+    bool scheduler_started;
 
 };
 
@@ -168,7 +170,7 @@ static int gx6xxx_read(struct vcpu *v, mmio_info_t *info,
 {
     struct mmio *mmio = priv;
     struct vcoproc_rw_context ctx;
-    static bool start = 1;
+    struct vgx6xxx_info *vinfo;
     unsigned long flags;
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
@@ -183,9 +185,10 @@ static int gx6xxx_read(struct vcpu *v, mmio_info_t *info,
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
     gx6xxx_print_reg(__FUNCTION__, ctx.offset, *r);
-    if ( unlikely(start) ) {
+    vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
+    if ( unlikely(!vinfo->scheduler_started) ) {
         /* TODO: find condition to start the scheduler */
-        start = 0;
+        vinfo->scheduler_started = true;
         vcoproc_scheduler_vcoproc_wake(ctx.coproc->sched, ctx.vcoproc);
     }
     return 1;
