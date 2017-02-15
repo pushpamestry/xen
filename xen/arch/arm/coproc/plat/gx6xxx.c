@@ -48,6 +48,8 @@ struct vgx6xxx_info
     uint64_t cr_soft_reset_hi;
     /* set if scheduler has been started for this vcoproc */
     bool scheduler_started;
+    /* set if boot sequence has completed */
+    bool boot_completed;
 
 };
 
@@ -316,20 +318,42 @@ static const struct mmio_handler_ops gx6xxx_mmio_handler = {
 
 static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 {
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)curr->priv;
+    s_time_t wait_time = 0;
     unsigned long flags;
 
     spin_lock_irqsave(&curr->coproc->vcoprocs_lock, flags);
+    /* check if boot completed: if we are still booting then
+     * we cannot switch context now
+     */
+    if ( unlikely(!vinfo->boot_completed) )
+    {
+        /* TODO: define time needed more precise */
+        wait_time = MILLISECS(10);
+        goto out;
+    }
+out:
     spin_unlock_irqrestore(&curr->coproc->vcoprocs_lock, flags);
-    return 0;
+    return wait_time;
 }
 
 static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
 {
     struct gx6xxx_info *info = (struct gx6xxx_info *)next->coproc->priv;
+#if 0
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)next->priv;
+#endif
     unsigned long flags;
 
     spin_lock_irqsave(&next->coproc->vcoprocs_lock, flags);
     info->curr = next;
+
+#if 0
+    /* switch done, we now go into boot mode - no switches must happen
+     * until we are done
+     */
+    vinfo->boot_completed = false;
+#endif
     spin_unlock_irqrestore(&next->coproc->vcoprocs_lock, flags);
     return 0;
 }
