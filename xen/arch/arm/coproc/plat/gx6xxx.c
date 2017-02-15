@@ -37,28 +37,55 @@
 
 struct vgx6xxx_info
 {
+    /* set if scheduler has been started for this vcoproc */
+    bool scheduler_started;
+
+    /*
+     ***************************************************************************
+     *                           REGISTERS
+     ***************************************************************************
+     */
     /* This is the current IRQ status register value reported/updated
      * to/from domains. Set on real IRQ from GPU, low 32-bits
      */
-    uint32_t irq_status;
+    uint32_t reg_val_irq_status_lo;
     /* Current value of the soft reset register, used to determine
      * when FW starts to run
      */
-    uint64_t cr_soft_reset_lo;
-    uint64_t cr_soft_reset_hi;
-    /* set if scheduler has been started for this vcoproc */
-    bool scheduler_started;
-    /* set if boot sequence has completed */
-    bool boot_completed;
+    uint32_t reg_val_cr_soft_reset_lo;
+    uint32_t reg_val_cr_soft_reset_hi;
 
+    /*
+     ***************************************************************************
+     * FIXME: Value of the registers below must be saved on write
+     ***************************************************************************
+     */
+    /* FIXME: META boot control register - low 32-bits are used */
+    /* FIXME: this must be tracked when written, reset on read */
+    uint32_t reg_val_cr_meta_boot_lo;
+
+    uint32_t reg_val_cr_mts_garten_wrapper_config_lo;
+    uint32_t reg_val_cr_mts_garten_wrapper_config_hi;
+
+    /*
+     ***************************************************************************
+     * FIXME: Value of the registers remain constant once written
+     * and can be read back
+     ***************************************************************************
+     */
+    /* FIXME: SLC control register - low 32-bits are used */
+    uint32_t reg_val_cr_slc_ctrl_misc_lo;
+    uint64_t reg_val_cr_axi_ace_lite_configuration;
+    /* FIXME: address of kernel page catalog */
+    uint64_t reg_val_cr_bif_cat_base0;
 };
 
 struct gx6xxx_info
 {
     struct vcoproc_instance *curr;
     /* FIXME: IRQ registers are 64-bit, but only low 32-bits are used */
-    uint32_t *reg_irq_status;
-    uint32_t *reg_irq_clear;
+    uint32_t *reg_vaddr_irq_status;
+    uint32_t *reg_vaddr_irq_clear;
 };
 
 #define RGX_CR_META_SP_MSLVIRQSTATUS                  (0x0AC8U)
@@ -202,8 +229,8 @@ static inline uint64_t gx6xxx_read64(struct coproc_device *coproc,
 #ifdef GX6XXX_DEBUG
     uint64_t val = readq((char *)coproc->mmios[0].base + offset);
 
-    gx6xxx_print_reg(__FUNCTION__, offset, val & 0xffffffff);
-    gx6xxx_print_reg(__FUNCTION__, offset + 4, val >> 32);
+    gx6xxx_print_reg(__FUNCTION__, REG_LO32(offset), val & 0xffffffff);
+    gx6xxx_print_reg(__FUNCTION__, REG_HI32(offset), val >> 32);
     return val;
 #else
     return readq((char *)coproc->mmios[0].base + offset);
@@ -213,32 +240,52 @@ static inline uint64_t gx6xxx_read64(struct coproc_device *coproc,
 static inline void gx6xxx_write64(struct coproc_device *coproc,
                                   uint32_t offset, uint64_t val)
 {
-    gx6xxx_print_reg(__FUNCTION__, offset, val & 0xffffffff);
-    gx6xxx_print_reg(__FUNCTION__, offset + 4, val >> 32);
+    gx6xxx_print_reg(__FUNCTION__, REG_LO32(offset), val & 0xffffffff);
+    gx6xxx_print_reg(__FUNCTION__, REG_HI32(offset), val >> 32);
     writeq(val, (char *)coproc->mmios[0].base + offset);
 }
 
-static void gx6xxx_check_soft_reset(uint32_t offset, uint32_t val,
-                                    struct vcoproc_instance *vcoproc)
+static void gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
+                                         struct vgx6xxx_info *vinfo)
 {
-    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
-
-    if ( unlikely(offset == REG_LO32(RGX_CR_SOFT_RESET)) )
-    {
-        vinfo->cr_soft_reset_lo = val;
-    }
-    if ( unlikely(offset == REG_HI32(RGX_CR_SOFT_RESET)) )
-    {
-        vinfo->cr_soft_reset_hi = val;
-    }
     /* start condition is all zeros in the RGX_CR_SOFT_RESET register */
-    if ( unlikely(!vinfo->cr_soft_reset_lo && !vinfo->cr_soft_reset_hi) )
+    if ( unlikely(!vinfo->reg_val_cr_soft_reset_lo &&
+                  !vinfo->reg_val_cr_soft_reset_hi) )
     {
         if ( likely(!vinfo->scheduler_started) )
         {
             vinfo->scheduler_started = true;
             vcoproc_scheduler_vcoproc_wake(vcoproc->coproc->sched, vcoproc);
         }
+    }
+}
+
+static void gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
+                                struct vcoproc_instance *vcoproc)
+{
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+
+    switch ( offset )
+    {
+    case REG_LO32(RGX_CR_META_BOOT):
+        vinfo->reg_val_cr_meta_boot_lo = val;
+        break;
+    case REG_LO32(RGX_CR_SOFT_RESET):
+        vinfo->reg_val_cr_soft_reset_lo = val;
+        gx6xxx_check_start_condition(vcoproc, vinfo);
+        break;
+    case REG_HI32(RGX_CR_SOFT_RESET):
+        vinfo->reg_val_cr_soft_reset_hi = val;
+        gx6xxx_check_start_condition(vcoproc, vinfo);
+        break;
+    case REG_LO32(RGX_CR_MTS_GARTEN_WRAPPER_CONFIG):
+        vinfo->reg_val_cr_mts_garten_wrapper_config_lo = val;
+        break;
+    case REG_HI32(RGX_CR_MTS_GARTEN_WRAPPER_CONFIG):
+        vinfo->reg_val_cr_mts_garten_wrapper_config_hi = val;
+        break;
+    default:
+        break;
     }
 }
 
@@ -254,7 +301,7 @@ static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
     if ( likely(ctx.offset == RGXFW_CR_IRQ_STATUS) ) {
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 
-        *r = vinfo->irq_status;
+        *r = vinfo->reg_val_irq_status_lo;
         goto out;
     }
     *r = readl((char *)mmio->base + ctx.offset);
@@ -276,15 +323,14 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
     if (ctx.offset == RGXFW_CR_IRQ_STATUS) {
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 
-        vinfo->irq_status = r;
+        vinfo->reg_val_irq_status_lo = r;
         goto out;
     }
     writel(r, (char *)mmio->base + ctx.offset);
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
     gx6xxx_print_reg(__FUNCTION__, ctx.offset, r);
-    /* check if need to start scheduling */
-    gx6xxx_check_soft_reset(ctx.offset, r, ctx.vcoproc);
+    gx6xxx_on_reg_write(ctx.offset, r, ctx.vcoproc);
     return 1;
 }
 
@@ -297,15 +343,15 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     unsigned long flags;
 
     spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
-    irq_status = readl(info->reg_irq_status);
+    irq_status = readl(info->reg_vaddr_irq_status);
     if (irq_status & RGXFW_CR_IRQ_STATUS_EVENT_EN)
     {
         struct vcoproc_instance *vcoproc = info->curr;
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
-        writel(RGXFW_CR_IRQ_CLEAR_MASK, info->reg_irq_clear);
+        writel(RGXFW_CR_IRQ_CLEAR_MASK, info->reg_vaddr_irq_clear);
         /* Save interrupt status register, so we can deliver to domain later. */
-        vinfo->irq_status = irq_status;
+        vinfo->reg_val_irq_status_lo = irq_status;
         vgic_vcpu_inject_spi(vcoproc->domain, irq);
     }
     spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
@@ -316,44 +362,39 @@ static const struct mmio_handler_ops gx6xxx_mmio_handler = {
     .write = gx6xxx_mmio_write,
 };
 
+static void gx6xxx_ctx_switch_save_regs(struct coproc_device *coproc,
+                                        struct vgx6xxx_info *vinfo)
+{
+    vinfo->reg_val_cr_slc_ctrl_misc_lo =
+        gx6xxx_read32(coproc, REG_LO32(RGX_CR_SLC_CTRL_MISC));
+    vinfo->reg_val_cr_axi_ace_lite_configuration =
+        gx6xxx_read64(coproc, RGX_CR_AXI_ACE_LITE_CONFIGURATION);
+    vinfo->reg_val_cr_bif_cat_base0 =
+        gx6xxx_read64(coproc, RGX_CR_BIF_CAT_BASE0);
+}
+
 static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)curr->priv;
-    s_time_t wait_time = 0;
     unsigned long flags;
 
     spin_lock_irqsave(&curr->coproc->vcoprocs_lock, flags);
-    /* check if boot completed: if we are still booting then
-     * we cannot switch context now
-     */
-    if ( unlikely(!vinfo->boot_completed) )
-    {
-        /* TODO: define time needed more precise */
-        wait_time = MILLISECS(10);
-        goto out;
-    }
-out:
+
+    gx6xxx_ctx_switch_save_regs(curr->coproc, vinfo);
+
     spin_unlock_irqrestore(&curr->coproc->vcoprocs_lock, flags);
-    return wait_time;
+    return 0;
 }
 
 static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
 {
     struct gx6xxx_info *info = (struct gx6xxx_info *)next->coproc->priv;
-#if 0
-    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)next->priv;
-#endif
     unsigned long flags;
 
     spin_lock_irqsave(&next->coproc->vcoprocs_lock, flags);
+
     info->curr = next;
 
-#if 0
-    /* switch done, we now go into boot mode - no switches must happen
-     * until we are done
-     */
-    vinfo->boot_completed = false;
-#endif
     spin_unlock_irqrestore(&next->coproc->vcoprocs_lock, flags);
     return 0;
 }
@@ -416,8 +457,8 @@ static int gx6xxx_dt_probe(struct platform_device *pdev)
     }
     info = (struct gx6xxx_info *)coproc->priv;
     reg_base = (char *)coproc->mmios[0].base;
-    info->reg_irq_status = (uint32_t *)(reg_base + RGXFW_CR_IRQ_STATUS);
-    info->reg_irq_clear = (uint32_t *)(reg_base + RGXFW_CR_IRQ_CLEAR);
+    info->reg_vaddr_irq_status = (uint32_t *)(reg_base + RGXFW_CR_IRQ_STATUS);
+    info->reg_vaddr_irq_clear = (uint32_t *)(reg_base + RGXFW_CR_IRQ_CLEAR);
 
     ret = request_irq(coproc->irqs[0], IRQF_SHARED,
                       gx6xxx_irq_handler, "GPU GX6xxx irq", coproc);
