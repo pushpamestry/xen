@@ -31,6 +31,10 @@
 #define GX6XXX_NUM_IRQ  1
 #define GX6XXX_NUM_MMIO 1
 
+#if 1
+#define GX6XXX_DEBUG 1
+#endif
+
 struct vgx6xxx_info
 {
     /* This is the current IRQ status reported/updated to/from domains.
@@ -73,6 +77,92 @@ struct gx6xxx_info
 #define RGX_CR_SLC_CTRL_MISC                          (0x3800U)
 #define RGX_CR_AXI_ACE_LITE_CONFIGURATION             (0x38C0U)
 
+#ifdef GX6XXX_DEBUG
+static void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
+{
+    char *name;
+
+    switch (reg) {
+    case RGX_CR_SOFT_RESET:
+        name = "RGX_CR_SOFT_RESET LO";
+        break;
+    case RGX_CR_SOFT_RESET + 4:
+        name = "RGX_CR_SOFT_RESET HI";
+        break;
+    case RGX_CR_SLC_CTRL_MISC:
+        name = "RGX_CR_SLC_CTRL_MISC LO";
+        break;
+    case RGX_CR_SLC_CTRL_MISC + 4:
+        name = "RGX_CR_SLC_CTRL_MISC HI";
+        break;
+    case RGX_CR_META_BOOT:
+        name = "RGX_CR_META_BOOT LO";
+        break;
+    case RGX_CR_META_BOOT + 4:
+        name = "RGX_CR_META_BOOT HI";
+        break;
+    case RGX_CR_META_SP_MSLVIRQSTATUS:
+        name = "RGXFW_CR_IRQ_STATUS/CLEAR";
+        break;
+    case RGX_CR_TIMER:
+        name = "RGX_CR_TIMER LO";
+        break;
+    case RGX_CR_TIMER + 4:
+        name = "RGX_CR_TIMER HI";
+        break;
+    case RGX_CR_MTS_GARTEN_WRAPPER_CONFIG:
+        name = "RGX_CR_MTS_GARTEN_WRAPPER_CONFIG LO";
+        break;
+    case RGX_CR_MTS_GARTEN_WRAPPER_CONFIG + 4:
+        name = "RGX_CR_MTS_GARTEN_WRAPPER_CONFIG HI";
+        break;
+    case RGX_CR_AXI_ACE_LITE_CONFIGURATION:
+        name = "RGX_CR_AXI_ACE_LITE_CONFIGURATION LO";
+        break;
+    case RGX_CR_AXI_ACE_LITE_CONFIGURATION + 4:
+        name = "RGX_CR_AXI_ACE_LITE_CONFIGURATION HI";
+        break;
+    case RGX_CR_BIF_CAT_BASE0:
+        name = "RGX_CR_BIF_CAT_BASE0 LO";
+        break;
+    case RGX_CR_BIF_CAT_BASE0 + 4:
+        name = "RGX_CR_BIF_CAT_BASE0 HI";
+        break;
+    case RGX_CR_META_SP_MSLVCTRL1:
+        name = "RGX_CR_META_SP_MSLVCTRL1 LO";
+        break;
+    case RGX_CR_META_SP_MSLVCTRL1 + 4:
+        name = "RGX_CR_META_SP_MSLVCTRL1 HI";
+        break;
+    case RGX_CR_MTS_SCHEDULE:
+        name = "RGX_CR_MTS_SCHEDULE LO";
+        break;
+    case RGX_CR_MTS_SCHEDULE + 4:
+        name = "RGX_CR_MTS_SCHEDULE HI";
+        break;
+    case RGX_CR_META_SP_MSLVCTRL0:
+        name = "RGX_CR_META_SP_MSLVCTRL0 LO";
+        break;
+    case RGX_CR_META_SP_MSLVCTRL0 + 4:
+        name = "RGX_CR_META_SP_MSLVCTRL0 HI";
+        break;
+    case RGX_CR_META_SP_MSLVDATAX:
+        name = "RGX_CR_META_SP_MSLVDATAX LO";
+        break;
+    case RGX_CR_META_SP_MSLVDATAX + 4:
+        name = "RGX_CR_META_SP_MSLVDATAX HI";
+        break;
+    default:
+        name = "??";
+        printk("Unknown register %08x\n", reg);
+        break;
+    }
+    printk("%s: %s -> %08x\n", prefix, name, val);
+}
+#else
+#define gx6xxx_print_reg(a, b, c) {}
+#endif
+
 static int gx6xxx_read(struct vcpu *v, mmio_info_t *info,
                        register_t *r, void *priv)
 {
@@ -92,6 +182,7 @@ static int gx6xxx_read(struct vcpu *v, mmio_info_t *info,
     *r = readl((char *)mmio->base + ctx.offset);
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
+    gx6xxx_print_reg(__FUNCTION__, ctx.offset, *r);
     if ( unlikely(start) ) {
         /* TODO: find condition to start the scheduler */
         start = 0;
@@ -118,6 +209,7 @@ static int gx6xxx_write(struct vcpu *v, mmio_info_t *info,
     writel(r, (char *)mmio->base + ctx.offset);
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
+    gx6xxx_print_reg(__FUNCTION__, ctx.offset, r);
     return 1;
 }
 
