@@ -17,11 +17,12 @@
  * GNU General Public License for more details.
  */
 
-#include <xen/init.h>
+#include <asm/io.h>
+#include <xen/delay.h>
 #include <xen/err.h>
+#include <xen/init.h>
 #include <xen/irq.h>
 #include <xen/vmap.h>
-#include <asm/io.h>
 
 #include "../coproc.h"
 #include "common.h"
@@ -379,8 +380,8 @@ static const struct mmio_handler_ops gx6xxx_mmio_handler = {
     .write = gx6xxx_mmio_write,
 };
 
-static void gx6xxx_ctx_switch_save_regs(struct coproc_device *coproc,
-                                        struct vgx6xxx_info *vinfo)
+static void gx6xxx_ctx_gpu_save_regs(struct coproc_device *coproc,
+                                     struct vgx6xxx_info *vinfo)
 {
     vinfo->reg_val_cr_slc_ctrl_misc_lo =
         gx6xxx_read32(coproc, REG_LO32(RGX_CR_SLC_CTRL_MISC));
@@ -390,6 +391,70 @@ static void gx6xxx_ctx_switch_save_regs(struct coproc_device *coproc,
         gx6xxx_read64(coproc, RGX_CR_BIF_CAT_BASE0);
 }
 
+#define RGX_CR_SOFT_RESET_MASKFULL          (0x00E7FFFFFFFFFC1D)
+#define RGX_CR_SOFT_RESET_ALL               (RGX_CR_SOFT_RESET_MASKFULL)
+
+#define RGX_CR_SOFT_RESET_DUST_A_CORE_EN    (0X0000000020000000)
+#define RGX_CR_SOFT_RESET_DUST_B_CORE_EN    (0X0000000040000000)
+#define RGX_CR_SOFT_RESET_DUST_C_CORE_EN    (0X0000000800000000)
+#define RGX_CR_SOFT_RESET_DUST_D_CORE_EN    (0X0000001000000000)
+#define RGX_CR_SOFT_RESET_DUST_E_CORE_EN    (0X0000002000000000)
+#define RGX_CR_SOFT_RESET_DUST_F_CORE_EN    (0X0000004000000000)
+#define RGX_CR_SOFT_RESET_DUST_G_CORE_EN    (0X0000008000000000)
+#define RGX_CR_SOFT_RESET_DUST_H_CORE_EN    (0X0000010000000000)
+
+#define RGX_CR_SOFT_RESET_DUST_n_CORE_EN    (RGX_CR_SOFT_RESET_DUST_A_CORE_EN | \
+                                             RGX_CR_SOFT_RESET_DUST_B_CORE_EN | \
+                                             RGX_CR_SOFT_RESET_DUST_C_CORE_EN | \
+                                             RGX_CR_SOFT_RESET_DUST_D_CORE_EN | \
+                                             RGX_CR_SOFT_RESET_DUST_E_CORE_EN | \
+                                             RGX_CR_SOFT_RESET_DUST_F_CORE_EN | \
+                                             RGX_CR_SOFT_RESET_DUST_G_CORE_EN | \
+                                             RGX_CR_SOFT_RESET_DUST_H_CORE_EN)
+
+#define RGX_CR_SOFT_RESET_RASCAL_CORE_EN    (0X0000000080000000)
+#define RGX_CR_SOFT_RESET_GARTEN_EN         (0X0000000100000000)
+
+#define RGX_CR_SOFT_RESET_RASCALDUSTS_EN    (RGX_CR_SOFT_RESET_RASCAL_CORE_EN | \
+                                             RGX_CR_SOFT_RESET_DUST_n_CORE_EN)
+
+static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
+                            struct vgx6xxx_info *vinfo)
+{
+    /* perform soft-reset */
+    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, RGX_CR_SOFT_RESET_ALL);
+    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET,
+                   RGX_CR_SOFT_RESET_ALL ^ RGX_CR_SOFT_RESET_RASCALDUSTS_EN);
+    (void)gx6xxx_read64(coproc, RGX_CR_SOFT_RESET);
+
+    /* start everything, but META */
+    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, RGX_CR_SOFT_RESET_GARTEN_EN);
+
+    gx6xxx_write32(coproc, RGX_CR_SLC_CTRL_MISC,
+                   vinfo->reg_val_cr_slc_ctrl_misc_lo);
+    gx6xxx_write32(coproc, RGX_CR_META_BOOT,
+                   vinfo->reg_val_cr_meta_boot_lo);
+    gx6xxx_write64(coproc, RGX_CR_MTS_GARTEN_WRAPPER_CONFIG,
+                   vinfo->reg_val_cr_mts_garten_wrapper_config_lo |
+                   (uint64_t)vinfo->reg_val_cr_mts_garten_wrapper_config_hi << 32);
+    gx6xxx_write64(coproc, RGX_CR_AXI_ACE_LITE_CONFIGURATION,
+                   vinfo->reg_val_cr_axi_ace_lite_configuration);
+    gx6xxx_write64(coproc, RGX_CR_BIF_CAT_BASE0,
+                   vinfo->reg_val_cr_bif_cat_base0);
+
+    /* wait for at least 16 cycles */
+    udelay(32);
+
+    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, 0x0);
+    (void)gx6xxx_read64(coproc, RGX_CR_SOFT_RESET);
+
+    /* wait for at least 16 cycles */
+    udelay(32);
+
+    /* FIXME: if slave is booting then it needs a kick to start */
+    return 0;
+}
+
 static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)curr->priv;
@@ -397,7 +462,7 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 
     spin_lock_irqsave(&curr->coproc->vcoprocs_lock, flags);
 
-    gx6xxx_ctx_switch_save_regs(curr->coproc, vinfo);
+    gx6xxx_ctx_gpu_save_regs(curr->coproc, vinfo);
 
     spin_unlock_irqrestore(&curr->coproc->vcoprocs_lock, flags);
     return 0;
@@ -406,14 +471,18 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
 {
     struct gx6xxx_info *info = (struct gx6xxx_info *)next->coproc->priv;
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)next->priv;
+    int ret = 0;
     unsigned long flags;
 
     spin_lock_irqsave(&next->coproc->vcoprocs_lock, flags);
 
+    ret = gx6xxx_ctx_gpu_start(next->coproc, vinfo);
+
     info->curr = next;
 
     spin_unlock_irqrestore(&next->coproc->vcoprocs_lock, flags);
-    return 0;
+    return ret;
 }
 
 static int gx6xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
