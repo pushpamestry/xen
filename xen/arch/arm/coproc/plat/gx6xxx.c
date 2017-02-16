@@ -320,6 +320,23 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
     spin_lock_irqsave(&ctx.coproc->vcoprocs_lock, flags);
+#ifdef GX6XXX_DEBUG
+    /* XXX: this code is used for DomU test GPU driver to start
+     * vcoproc's scheduler
+     */
+    if (ctx.offset == 0) {
+        struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
+
+        if ( likely(!vinfo->scheduler_started) )
+        {
+            vinfo->scheduler_started = true;
+            spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
+            vcoproc_scheduler_vcoproc_wake(ctx.coproc->sched, ctx.vcoproc);
+            spin_lock_irqsave(&ctx.coproc->vcoprocs_lock, flags);
+        }
+        goto out;
+    }
+#endif
     if (ctx.offset == RGXFW_CR_IRQ_STATUS) {
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 
