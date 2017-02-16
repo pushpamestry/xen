@@ -36,8 +36,52 @@
 #define GX6XXX_DEBUG 1
 #endif
 
+enum vgx6xxx_state
+{
+    /* initial state - just like after hard reset */
+    VGX6XXX_STATE_HARD_RESET,
+    /* scheduler is running, at least one context switch was made */
+    VGX6XXX_STATE_RUNNING,
+};
+#define VGX6XXX_STATE_DEFAULT   VGX6XXX_STATE_HARD_RESET
+
+enum vgx6xxx_reason
+{
+    VGX6XXX_REASON_CTX_FROM,
+    VGX6XXX_REASON_CTX_TO,
+};
+
+static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
+{
+    switch ( state )
+    {
+    case VGX6XXX_STATE_HARD_RESET:
+        return "HARD_RESET";
+    case VGX6XXX_STATE_RUNNING:
+        return "RUNNING";
+    default:
+        return "-=UNKNOWN=-";
+    }
+}
+
+static const char *vgx6xxx_reason_to_str(enum vgx6xxx_reason reason)
+{
+    switch ( reason )
+    {
+    case VGX6XXX_REASON_CTX_FROM:
+        return "CTX_FROM";
+    case VGX6XXX_REASON_CTX_TO:
+        return "CTX_TO";
+    default:
+        return "-=UNKNOWN=-";
+    }
+}
+
 struct vgx6xxx_info
 {
+    /* current state of the vcoproc */
+    enum vgx6xxx_state state;
+
     /* set if scheduler has been started for this vcoproc */
     bool scheduler_started;
 
@@ -455,39 +499,86 @@ static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
     return 0;
 }
 
-static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
+static void gx6xxx_handle_event_unlocked(struct vcoproc_instance *vcoproc,
+                                        enum vgx6xxx_reason what)
 {
-    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)curr->priv;
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+
+    dev_dbg(vcoproc->coproc->dev,
+            "> Domain %d what %s state %s\n", vcoproc->domain->domain_id,
+            vgx6xxx_reason_to_str(what), vgx6xxx_state_to_str(vinfo->state));
+    switch ( what )
+    {
+    case VGX6XXX_REASON_CTX_FROM:
+        switch ( vinfo->state )
+        {
+        case VGX6XXX_STATE_HARD_RESET:
+            break;
+        case VGX6XXX_STATE_RUNNING:
+            gx6xxx_ctx_gpu_save_regs(vcoproc->coproc, vinfo);
+            break;
+        default:
+            BUG();
+        }
+        break;
+    case VGX6XXX_REASON_CTX_TO:
+        switch ( vinfo->state )
+        {
+        case VGX6XXX_STATE_HARD_RESET:
+            /* we are first initialized and ready to run */
+            vinfo->state = VGX6XXX_STATE_RUNNING;
+            break;
+        case VGX6XXX_STATE_RUNNING:
+            gx6xxx_ctx_gpu_start(vcoproc->coproc, vinfo);
+            break;
+        default:
+            BUG();
+        }
+        break;
+    default:
+        dev_err(vcoproc->coproc->dev,
+                "Cannot handle reason %s for domain %d\n",
+                vgx6xxx_reason_to_str(vinfo->state),
+                vcoproc->domain->domain_id);
+        BUG();
+    }
+    dev_dbg(vcoproc->coproc->dev,
+            "< Domain %d state %s\n", vcoproc->domain->domain_id,
+            vgx6xxx_state_to_str(vinfo->state));
+}
+
+static void gx6xxx_handle_event(struct vcoproc_instance *vcoproc,
+                                enum vgx6xxx_reason what)
+{
     unsigned long flags;
 
-    spin_lock_irqsave(&curr->coproc->vcoprocs_lock, flags);
+    spin_lock_irqsave(&vcoproc->coproc->vcoprocs_lock, flags);
+    gx6xxx_handle_event_unlocked(vcoproc, what);
+    spin_unlock_irqrestore(&vcoproc->coproc->vcoprocs_lock, flags);
+}
 
-    gx6xxx_ctx_gpu_save_regs(curr->coproc, vinfo);
-
-    spin_unlock_irqrestore(&curr->coproc->vcoprocs_lock, flags);
+static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
+{
+    gx6xxx_handle_event(curr, VGX6XXX_REASON_CTX_FROM);
     return 0;
 }
 
 static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
 {
     struct gx6xxx_info *info = (struct gx6xxx_info *)next->coproc->priv;
-    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)next->priv;
-    int ret = 0;
     unsigned long flags;
 
     spin_lock_irqsave(&next->coproc->vcoprocs_lock, flags);
-
-    ret = gx6xxx_ctx_gpu_start(next->coproc, vinfo);
-
     info->curr = next;
-
+    gx6xxx_handle_event_unlocked(next, VGX6XXX_REASON_CTX_TO);
     spin_unlock_irqrestore(&next->coproc->vcoprocs_lock, flags);
-    return ret;
+    return 0;
 }
 
 static int gx6xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
 {
     struct mmio *mmio = &vcoproc->coproc->mmios[0];
+    struct vgx6xxx_info *vinfo;
 
     vcoproc->priv = xzalloc(struct vgx6xxx_info);
     if ( !vcoproc->priv )
@@ -496,6 +587,9 @@ static int gx6xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
                 "failed to allocate vcoproc private data\n");
         return -ENOMEM;
     }
+    vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+
+    vinfo->state = VGX6XXX_STATE_DEFAULT;
 
     register_mmio_handler(vcoproc->domain, &gx6xxx_mmio_handler,
                           mmio->addr, mmio->size, mmio);
