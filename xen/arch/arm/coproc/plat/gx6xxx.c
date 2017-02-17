@@ -504,6 +504,10 @@ static void gx6xxx_handle_event_unlocked(struct vcoproc_instance *vcoproc,
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
+#if 1
+    if ( vcoproc->domain->domain_id )
+        return;
+#endif
     dev_dbg(vcoproc->coproc->dev,
             "> Domain %d what %s state %s\n", vcoproc->domain->domain_id,
             vgx6xxx_reason_to_str(what), vgx6xxx_state_to_str(vinfo->state));
