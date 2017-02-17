@@ -38,18 +38,17 @@
 
 enum vgx6xxx_state
 {
-    /* initial state - just like after hard reset */
+    /* initial state - HW is just like after hard reset */
     VGX6XXX_STATE_HARD_RESET,
+    /* initialization sequence has started - collecting register values
+     * so those can be used for real GPU initialization */
+    VGX6XXX_STATE_INITIALIZING,
     /* scheduler is running, at least one context switch was made */
     VGX6XXX_STATE_RUNNING,
+    /* context is off - queueing requests and interrupts */
+    VGX6XXX_STATE_WAITING,
 };
 #define VGX6XXX_STATE_DEFAULT   VGX6XXX_STATE_HARD_RESET
-
-enum vgx6xxx_reason
-{
-    VGX6XXX_REASON_CTX_FROM,
-    VGX6XXX_REASON_CTX_TO,
-};
 
 static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
 {
@@ -57,21 +56,12 @@ static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
     {
     case VGX6XXX_STATE_HARD_RESET:
         return "HARD_RESET";
+    case VGX6XXX_STATE_INITIALIZING:
+        return "INITIALIZING";
     case VGX6XXX_STATE_RUNNING:
         return "RUNNING";
-    default:
-        return "-=UNKNOWN=-";
-    }
-}
-
-static const char *vgx6xxx_reason_to_str(enum vgx6xxx_reason reason)
-{
-    switch ( reason )
-    {
-    case VGX6XXX_REASON_CTX_FROM:
-        return "CTX_FROM";
-    case VGX6XXX_REASON_CTX_TO:
-        return "CTX_TO";
+    case VGX6XXX_STATE_WAITING:
+        return "WAITING";
     default:
         return "-=UNKNOWN=-";
     }
@@ -132,6 +122,17 @@ struct gx6xxx_info
     uint32_t *reg_vaddr_irq_status;
     uint32_t *reg_vaddr_irq_clear;
 };
+
+static inline void gx6xxx_set_state(struct vcoproc_instance *vcoproc,
+                                    enum vgx6xxx_state state)
+{
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+
+    dev_dbg(vcoproc->coproc->dev,
+            "Domain %d going from %s to %s\n", vcoproc->domain->domain_id,
+            vgx6xxx_state_to_str(vinfo->state), vgx6xxx_state_to_str(state));
+    vinfo->state = state;
+}
 
 #define RGX_CR_META_SP_MSLVIRQSTATUS                  (0x0AC8U)
 #define RGX_CR_META_SP_MSLVIRQSTATUS_MASKFULL         (IMG_UINT64_C(0x000000000000000C))
@@ -268,6 +269,12 @@ static inline void gx6xxx_write32(struct coproc_device *coproc,
     writel(val, (char *)coproc->mmios[0].base + offset);
 }
 
+static inline void gx6xxx_store32(uint32_t offset, uint32_t *reg, uint32_t val)
+{
+    gx6xxx_print_reg(__FUNCTION__, offset, val);
+    *reg = val;
+}
+
 static inline uint64_t gx6xxx_read64(struct coproc_device *coproc,
                                      uint32_t offset)
 {
@@ -290,48 +297,56 @@ static inline void gx6xxx_write64(struct coproc_device *coproc,
     writeq(val, (char *)coproc->mmios[0].base + offset);
 }
 
-static void gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
+static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
                                          struct vgx6xxx_info *vinfo)
 {
+    bool start = false;
+
     /* start condition is all zeros in the RGX_CR_SOFT_RESET register */
     if ( unlikely(!vinfo->reg_val_cr_soft_reset_lo &&
                   !vinfo->reg_val_cr_soft_reset_hi) )
     {
         if ( likely(!vinfo->scheduler_started) )
         {
-            vinfo->scheduler_started = true;
-            vcoproc_scheduler_vcoproc_wake(vcoproc->coproc->sched, vcoproc);
+            dev_dbg(vcoproc->coproc->dev, "Domain %d start condition met\n",
+                    vcoproc->domain->domain_id);
+            start = true;
         }
     }
+    return start;
 }
 
-static void gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
+static bool gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
                                 struct vcoproc_instance *vcoproc)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+    bool start = false;
 
     switch ( offset )
     {
     case REG_LO32(RGX_CR_META_BOOT):
-        vinfo->reg_val_cr_meta_boot_lo = val;
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_meta_boot_lo, val);
         break;
     case REG_LO32(RGX_CR_SOFT_RESET):
-        vinfo->reg_val_cr_soft_reset_lo = val;
-        gx6xxx_check_start_condition(vcoproc, vinfo);
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_soft_reset_lo,val);
+        start = gx6xxx_check_start_condition(vcoproc, vinfo);
         break;
     case REG_HI32(RGX_CR_SOFT_RESET):
-        vinfo->reg_val_cr_soft_reset_hi = val;
-        gx6xxx_check_start_condition(vcoproc, vinfo);
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_soft_reset_hi,val);
+        start = gx6xxx_check_start_condition(vcoproc, vinfo);
         break;
     case REG_LO32(RGX_CR_MTS_GARTEN_WRAPPER_CONFIG):
-        vinfo->reg_val_cr_mts_garten_wrapper_config_lo = val;
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_mts_garten_wrapper_config_lo,
+                       val);
         break;
     case REG_HI32(RGX_CR_MTS_GARTEN_WRAPPER_CONFIG):
-        vinfo->reg_val_cr_mts_garten_wrapper_config_hi = val;
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_mts_garten_wrapper_config_hi,
+                       val);
         break;
     default:
         break;
     }
+    return start;
 }
 
 static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
@@ -339,20 +354,56 @@ static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
 {
     struct mmio *mmio = priv;
     struct vcoproc_rw_context ctx;
+    struct vgx6xxx_info *vinfo;
     unsigned long flags;
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
     spin_lock_irqsave(&ctx.coproc->vcoprocs_lock, flags);
-    if ( likely(ctx.offset == RGXFW_CR_IRQ_STATUS) ) {
-        struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
+    vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 
-        *r = vinfo->reg_val_irq_status_lo;
+    /* FIXME: the very first read/write will change state to initializing */
+    if ( unlikely(vinfo->state == VGX6XXX_STATE_HARD_RESET) )
+        gx6xxx_set_state(ctx.vcoproc, VGX6XXX_STATE_INITIALIZING);
+    if ( unlikely((ctx.offset == REG_LO32(RGX_CR_TIMER)) ||
+                  (ctx.offset == REG_HI32(RGX_CR_TIMER))) )
+    {
+        /*
+         * FIXME: this is a special case: drivers will calibrate
+         * delays(?) upon power on, so no possibility to defer this reading
+         * without failure in the future. Thus, allow in any state
+         * FIXME: assume timer register can be read always, even if GPU
+         * hasn't been initialized/FW runs yet
+         */
+        *r = gx6xxx_read32(ctx.coproc, ctx.offset);
         goto out;
     }
-    *r = readl((char *)mmio->base + ctx.offset);
+    if ( vinfo->state == VGX6XXX_STATE_RUNNING )
+    {
+        if ( likely(ctx.offset == RGXFW_CR_IRQ_STATUS) ) {
+            *r = vinfo->reg_val_irq_status_lo;
+            goto out;
+        }
+        *r = gx6xxx_read32(ctx.coproc, ctx.offset);
+    }
+    else if ( vinfo->state == VGX6XXX_STATE_WAITING )
+    {
+
+    }
+    else if ( vinfo->state == VGX6XXX_STATE_INITIALIZING )
+    {
+        /* FIXME: in this state we only expect dummy reads
+         * of RGX_CR_SOFT_RESET. Just return all 0.
+         */
+        if ( likely((ctx.offset == REG_LO32(RGX_CR_SOFT_RESET)) ||
+                    (ctx.offset == REG_HI32(RGX_CR_SOFT_RESET))) )
+        {
+            *r = 0;
+            goto out;
+        }
+        BUG();
+    }
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
-    gx6xxx_print_reg(__FUNCTION__, ctx.offset, *r);
     return 1;
 }
 
@@ -361,18 +412,18 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
 {
     struct mmio *mmio = priv;
     struct vcoproc_rw_context ctx;
+    struct vgx6xxx_info *vinfo;
     unsigned long flags;
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
     spin_lock_irqsave(&ctx.coproc->vcoprocs_lock, flags);
+    vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 #ifdef GX6XXX_DEBUG
     /* XXX: this code is used for DomU test GPU driver to start
      * vcoproc's scheduler
      */
-    if (ctx.offset == 0) {
-        struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
-
-        if ( likely(!vinfo->scheduler_started) )
+    if ( unlikely(ctx.offset == 0) ) {
+        if ( !vinfo->scheduler_started )
         {
             vinfo->scheduler_started = true;
             spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
@@ -382,17 +433,38 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
         goto out;
     }
 #endif
-    if (ctx.offset == RGXFW_CR_IRQ_STATUS) {
-        struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
+    /* FIXME: the very first read/write will change state to initializing */
+    if ( unlikely(vinfo->state == VGX6XXX_STATE_HARD_RESET) )
+        gx6xxx_set_state(ctx.vcoproc, VGX6XXX_STATE_INITIALIZING);
+    if ( vinfo->state == VGX6XXX_STATE_RUNNING )
+    {
+        if (ctx.offset == RGXFW_CR_IRQ_STATUS) {
+            struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 
-        vinfo->reg_val_irq_status_lo = r;
-        goto out;
+            vinfo->reg_val_irq_status_lo = r;
+            goto out;
+        }
+        gx6xxx_write32(ctx.coproc, ctx.offset, r);
     }
-    writel(r, (char *)mmio->base + ctx.offset);
+    else if ( vinfo->state == VGX6XXX_STATE_WAITING )
+    {
+
+    }
+    else if ( vinfo->state == VGX6XXX_STATE_INITIALIZING )
+    {
+        /* FIXME: in this state we only save values of the registers
+         * so those can be used during real initialization
+         */
+        if ( unlikely(gx6xxx_on_reg_write(ctx.offset, r, ctx.vcoproc)) )
+        {
+            vinfo->scheduler_started = true;
+            spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
+            vcoproc_scheduler_vcoproc_wake(ctx.coproc->sched, ctx.vcoproc);
+            spin_lock_irqsave(&ctx.coproc->vcoprocs_lock, flags);
+        }
+    }
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
-    gx6xxx_print_reg(__FUNCTION__, ctx.offset, r);
-    gx6xxx_on_reg_write(ctx.offset, r, ctx.vcoproc);
     return 1;
 }
 
@@ -499,82 +571,59 @@ static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
     return 0;
 }
 
-static void gx6xxx_handle_event_unlocked(struct vcoproc_instance *vcoproc,
-                                        enum vgx6xxx_reason what)
-{
-    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
-
-#if 1
-    if ( vcoproc->domain->domain_id )
-        return;
-#endif
-    dev_dbg(vcoproc->coproc->dev,
-            "> Domain %d what %s state %s\n", vcoproc->domain->domain_id,
-            vgx6xxx_reason_to_str(what), vgx6xxx_state_to_str(vinfo->state));
-    switch ( what )
-    {
-    case VGX6XXX_REASON_CTX_FROM:
-        switch ( vinfo->state )
-        {
-        case VGX6XXX_STATE_HARD_RESET:
-            break;
-        case VGX6XXX_STATE_RUNNING:
-            gx6xxx_ctx_gpu_save_regs(vcoproc->coproc, vinfo);
-            break;
-        default:
-            BUG();
-        }
-        break;
-    case VGX6XXX_REASON_CTX_TO:
-        switch ( vinfo->state )
-        {
-        case VGX6XXX_STATE_HARD_RESET:
-            /* we are first initialized and ready to run */
-            vinfo->state = VGX6XXX_STATE_RUNNING;
-            break;
-        case VGX6XXX_STATE_RUNNING:
-            gx6xxx_ctx_gpu_start(vcoproc->coproc, vinfo);
-            break;
-        default:
-            BUG();
-        }
-        break;
-    default:
-        dev_err(vcoproc->coproc->dev,
-                "Cannot handle reason %s for domain %d\n",
-                vgx6xxx_reason_to_str(vinfo->state),
-                vcoproc->domain->domain_id);
-        BUG();
-    }
-    dev_dbg(vcoproc->coproc->dev,
-            "< Domain %d state %s\n", vcoproc->domain->domain_id,
-            vgx6xxx_state_to_str(vinfo->state));
-}
-
-static void gx6xxx_handle_event(struct vcoproc_instance *vcoproc,
-                                enum vgx6xxx_reason what)
-{
-    unsigned long flags;
-
-    spin_lock_irqsave(&vcoproc->coproc->vcoprocs_lock, flags);
-    gx6xxx_handle_event_unlocked(vcoproc, what);
-    spin_unlock_irqrestore(&vcoproc->coproc->vcoprocs_lock, flags);
-}
-
 static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 {
-    gx6xxx_handle_event(curr, VGX6XXX_REASON_CTX_FROM);
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)curr->priv;
+    unsigned long flags;
+
+    printk("%s dom %d\n", __FUNCTION__, curr->domain->domain_id);
+#if 1
+    if ( curr->domain->domain_id )
+        return 0;
+#endif
+    spin_lock_irqsave(&curr->coproc->vcoprocs_lock, flags);
+    if ( vinfo->state == VGX6XXX_STATE_RUNNING )
+    {
+        gx6xxx_set_state(curr, VGX6XXX_STATE_WAITING);
+        gx6xxx_ctx_gpu_save_regs(curr->coproc, vinfo);
+    }
+    else
+    {
+        gx6xxx_set_state(curr, vinfo->state);
+        BUG();
+    }
+    spin_unlock_irqrestore(&curr->coproc->vcoprocs_lock, flags);
     return 0;
 }
 
 static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
 {
     struct gx6xxx_info *info = (struct gx6xxx_info *)next->coproc->priv;
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)next->priv;
     unsigned long flags;
 
+    printk("%s dom %d\n", __FUNCTION__, next->domain->domain_id);
+#if 1
+    if ( next->domain->domain_id )
+        return 0;
+#endif
     spin_lock_irqsave(&next->coproc->vcoprocs_lock, flags);
     info->curr = next;
-    gx6xxx_handle_event_unlocked(next, VGX6XXX_REASON_CTX_TO);
+    if ( vinfo->state == VGX6XXX_STATE_WAITING )
+    {
+        gx6xxx_set_state(next, VGX6XXX_STATE_RUNNING);
+        gx6xxx_ctx_gpu_start(next->coproc, vinfo);
+    }
+    else if ( vinfo->state == VGX6XXX_STATE_INITIALIZING )
+    {
+        gx6xxx_set_state(next, VGX6XXX_STATE_RUNNING);
+        gx6xxx_ctx_gpu_start(next->coproc, vinfo);
+    }
+    else
+    {
+        gx6xxx_set_state(next, vinfo->state);
+        BUG();
+    }
     spin_unlock_irqrestore(&next->coproc->vcoprocs_lock, flags);
     return 0;
 }
@@ -594,6 +643,9 @@ static int gx6xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
     vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
     vinfo->state = VGX6XXX_STATE_DEFAULT;
+
+    vinfo->reg_val_cr_soft_reset_lo = UINT32_MAX;
+    vinfo->reg_val_cr_soft_reset_hi = UINT32_MAX;
 
     register_mmio_handler(vcoproc->domain, &gx6xxx_mmio_handler,
                           mmio->addr, mmio->size, mmio);
