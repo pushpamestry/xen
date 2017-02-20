@@ -90,13 +90,8 @@ struct vgx6xxx_info
     uint32_t reg_val_cr_soft_reset_lo;
     uint32_t reg_val_cr_soft_reset_hi;
 
-    /* FIXME: RGX_CR_MTS_SCHEDULE is write only */
-    /* mask of all scheduled jobs while not in running state */
-    uint32_t reg_cr_mts_schedule_lo_wait;
-    /* save scheduled jobs while running, so we can detect if interrupt
-     * is expected on context switch
-     */
-    uint32_t reg_cr_mts_schedule_lo_run;
+    /* number of writes to RGX_CR_MTS_SCHEDULE while not in running state */
+    int reg_cr_mts_schedule_lo_wait_cnt;
 
     /*
      ***************************************************************************
@@ -161,12 +156,14 @@ static inline void gx6xxx_set_state(struct vcoproc_instance *vcoproc,
 #define RGX_CR_TIMER                                  (0x0160U)
 #define RGX_CR_META_SP_MSLVCTRL0                      (0x0A10U)
 #define RGX_CR_META_SP_MSLVCTRL1                      (0x0A18U)
-#define RGX_CR_MTS_SCHEDULE                           (0x0B00U)
 #define RGX_CR_MTS_GARTEN_WRAPPER_CONFIG              (0x0B50U)
 #define RGX_CR_META_BOOT                              (0x0BF8U)
 #define RGX_CR_BIF_CAT_BASE0                          (0x1200U)
 #define RGX_CR_SLC_CTRL_MISC                          (0x3800U)
 #define RGX_CR_AXI_ACE_LITE_CONFIGURATION             (0x38C0U)
+
+#define RGX_CR_MTS_SCHEDULE                           (0x0B00U)
+#define RGX_CR_MTS_SCHEDULE_TASK_COUNTED              (0X00000010U)
 
 #define REG_LO32(a) ( (a) )
 #define REG_HI32(a) ( (a) + sizeof(uint32_t) )
@@ -455,19 +452,19 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
     if ( vinfo->state == VGX6XXX_STATE_RUNNING )
     {
         gx6xxx_write32(ctx.coproc, ctx.offset, r);
-        if ( likely(ctx.offset == RGX_CR_MTS_SCHEDULE) )
-            vinfo->reg_cr_mts_schedule_lo_run |= r;
+
     }
     else if ( vinfo->state == VGX6XXX_STATE_WAITING )
     {
         if ( likely(ctx.offset == RGX_CR_MTS_SCHEDULE) )
         {
-            /* FIXME: collect all kinds of jobs scheduled */
-            /* FIXME: these can be ORed, no need to count number of kicks */
-            gx6xxx_store32(ctx.offset, &vinfo->reg_cr_mts_schedule_lo_wait,
-                           vinfo->reg_cr_mts_schedule_lo_wait | r);
+            BUG_ON( r != RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
+            vinfo->reg_cr_mts_schedule_lo_wait_cnt++;
             goto out;
         }
+        dev_err(ctx.coproc->dev, "Unexpected write at %08x val %08x\n",
+                ctx.offset, (uint32_t)r);
+        BUG();
     }
     else if ( vinfo->state == VGX6XXX_STATE_INITIALIZING )
     {
@@ -514,12 +511,13 @@ static void gx6xxx_irq_handler(int irq, void *dev,
 #endif
         /* Save interrupt status register, so we can deliver to domain later. */
         vinfo->reg_val_irq_status_lo = irq_status;
-        /* FIXME: we OR jobs, but here we clear all of them */
-        vinfo->reg_cr_mts_schedule_lo_run = 0;
         vgic_vcpu_inject_spi(vcoproc->domain, irq);
     }
     spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
     printk("< %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
+    if ( info->curr->domain->domain_id )
+        printk("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++ delivering to Dom %d\n",
+                info->curr->domain->domain_id);
 }
 
 static const struct mmio_handler_ops gx6xxx_mmio_handler = {
@@ -615,8 +613,7 @@ static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
 static inline bool gx6xxx_is_irq_pending_unlocked(struct coproc_device *coproc,
                                                   struct vgx6xxx_info *vinfo)
 {
-    return vinfo->reg_cr_mts_schedule_lo_run ||
-           gx6xxx_read32(coproc, RGXFW_CR_IRQ_STATUS);
+    return gx6xxx_read32(coproc, RGXFW_CR_IRQ_STATUS);
 }
 
 static inline bool gx6xxx_is_irq_pending(struct coproc_device *coproc,
@@ -657,7 +654,7 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 
             /* unlock, so interrupt can be served */
             spin_unlock_irqrestore(&curr->coproc->vcoprocs_lock, flags);
-            while ( gx6xxx_is_irq_pending(curr->coproc, vinfo) )
+            do
             {
                 /* burn the CPU */
                 cpu_relax();
@@ -666,7 +663,7 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
                        curr->domain->domain_id);
                 break;
 #endif
-            }
+            } while ( gx6xxx_is_irq_pending(curr->coproc, vinfo) );
             spin_lock_irqsave(&curr->coproc->vcoprocs_lock, flags);
         }
         gx6xxx_ctx_gpu_save_regs(curr->coproc, vinfo);
@@ -698,13 +695,13 @@ static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
         gx6xxx_ctx_gpu_start(next->coproc, vinfo);
         gx6xxx_set_state(next, VGX6XXX_STATE_RUNNING);
         /* flush scheduled work */
-        if ( likely(vinfo->reg_cr_mts_schedule_lo_wait) )
-        {
-            gx6xxx_write32(next->coproc, RGX_CR_MTS_SCHEDULE,
-                           vinfo->reg_cr_mts_schedule_lo_wait);
-            vinfo->reg_cr_mts_schedule_lo_run = vinfo->reg_cr_mts_schedule_lo_wait;
-            vinfo->reg_cr_mts_schedule_lo_wait = 0;
-        }
+        if ( likely(vinfo->reg_cr_mts_schedule_lo_wait_cnt) )
+            do
+            {
+                gx6xxx_write32(next->coproc, RGX_CR_MTS_SCHEDULE,
+                               RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
+            }
+            while (--vinfo->reg_cr_mts_schedule_lo_wait_cnt);
     }
     else if ( vinfo->state == VGX6XXX_STATE_INITIALIZING )
     {
