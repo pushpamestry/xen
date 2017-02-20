@@ -45,6 +45,8 @@ enum vgx6xxx_state
     VGX6XXX_STATE_INITIALIZING,
     /* scheduler is running, at least one context switch was made */
     VGX6XXX_STATE_RUNNING,
+    /* asked to switch from but waiting for GPU to finish current jobs */
+    VGX6XXX_STATE_IN_TRANSIT,
     /* context is off - queueing requests and interrupts */
     VGX6XXX_STATE_WAITING,
 };
@@ -60,6 +62,8 @@ static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
         return "INITIALIZING";
     case VGX6XXX_STATE_RUNNING:
         return "RUNNING";
+    case VGX6XXX_STATE_IN_TRANSIT:
+        return "IN_TRANSIT";
     case VGX6XXX_STATE_WAITING:
         return "WAITING";
     default:
@@ -165,14 +169,67 @@ static inline void gx6xxx_set_state(struct vcoproc_instance *vcoproc,
 #define RGX_CR_MTS_SCHEDULE                           (0x0B00U)
 #define RGX_CR_MTS_SCHEDULE_TASK_COUNTED              (0X00000010U)
 
+#define RGX_CR_SIDEKICK_IDLE                (0x03C8U)
+#define RGX_CR_SIDEKICK_IDLE_MASKFULL       (0x000000000000007F)
+#define RGX_CR_SIDEKICK_IDLE_FB_CDC_EN      (0X00000040U)
+#define RGX_CR_SIDEKICK_IDLE_MMU_EN         (0X00000020U)
+#define RGX_CR_SIDEKICK_IDLE_BIF128_EN      (0X00000010U)
+#define RGX_CR_SIDEKICK_IDLE_TLA_EN         (0X00000008U)
+#define RGX_CR_SIDEKICK_IDLE_GARTEN_EN      (0X00000004U)
+#define RGX_CR_SIDEKICK_IDLE_HOSTIF_EN      (0X00000002U)
+#define RGX_CR_SIDEKICK_IDLE_SOCIF_EN       (0X00000001U)
+
+#define RGX_CR_SLC_IDLE                     (0x3898U)
+#define RGX_CR_SLC_IDLE_MASKFULL            (0x00000000000000FF)
+
+#define RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC                (0x0B40U)
+#define RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_MASKFULL       (0x000000000000FFFF)
+#define RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK (0XFFFF0000U)
+
+#define RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC                 (0x0B30U)
+#define RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_MASKFULL        (0x000000000000FFFF)
+#define RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK (0XFFFF0000U)
+
+#define RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC                (0x0B48U)
+#define RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_MASKFULL       (0x000000000000FFFF)
+#define RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK (0XFFFF0000U)
+
+#define RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC                 (0x0B38U)
+#define RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_MASKFULL        (0x000000000000FFFF)
+#define RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK (0XFFFF0000U)
+
+#define RGX_CR_BIF_STATUS_MMU                             (0x1358U)
+#define RGX_CR_BIF_STATUS_MMU_MASKFULL                    (0x00000000000000FF)
+#define RGX_CR_BIF_STATUS_MMU_REQUESTS_CLRMSK             (0XFFFFFF00U)
+
+#define RGX_CR_BIFPM_STATUS_MMU                           (0x1350U)
+#define RGX_CR_BIFPM_STATUS_MMU_MASKFULL                  (0x00000000000000FF)
+#define RGX_CR_BIFPM_STATUS_MMU_REQUESTS_CLRMSK           (0XFFFFFF00U)
+
+#define RGX_CR_BIFPM_READS_EXT_STATUS                     (0x1338U)
+#define RGX_CR_BIFPM_READS_EXT_STATUS_MASKFULL            (0x000000000000FFFF)
+#define RGX_CR_BIFPM_READS_EXT_STATUS_BANK0_CLRMSK        (0XFFFF0000U)
+
+#define RGX_CR_SLC_STATUS1                                (0x3870U)
+#define RGX_CR_SLC_STATUS1_MASKFULL                       (0x800003FF03FFFFFFUL)
+
+#define RGX_CR_META_SP_MSLVCTRL1_READY_EN                 (0X01000000U)
+#define RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN          (0X04000000U)
+
+#define RGX_CR_META_SP_MSLVDATAT                          (0x0A08U)
+
 #define REG_LO32(a) ( (a) )
 #define REG_HI32(a) ( (a) + sizeof(uint32_t) )
+
+bool gx6xxx_debug = true;
 
 #ifdef GX6XXX_DEBUG
 static void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
 {
     char *name;
 
+    if ( !gx6xxx_debug )
+        return;
     switch (reg) {
     case RGX_CR_SOFT_RESET:
         name = "RGX_CR_SOFT_RESET LO";
@@ -242,6 +299,42 @@ static void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
         break;
     case RGX_CR_META_SP_MSLVDATAX + 4:
         name = "RGX_CR_META_SP_MSLVDATAX HI";
+        break;
+    case RGX_CR_SIDEKICK_IDLE:
+        name = "RGX_CR_SIDEKICK_IDLE LO";
+        break;
+    case RGX_CR_SLC_IDLE:
+        name = "RGX_CR_SLC_IDLE LO";
+        break;
+    case RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC:
+        name = "RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC LO";
+        break;
+    case RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC:
+        name = "RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC LO";
+        break;
+    case RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC:
+        name = "RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC LO";
+        break;
+    case RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC:
+        name = "RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC LO";
+        break;
+    case RGX_CR_META_SP_MSLVDATAT:
+        name = "RGX_CR_META_SP_MSLVDATAT LO";
+        break;
+    case RGX_CR_BIF_STATUS_MMU:
+        name = "RGX_CR_BIF_STATUS_MMU LO";
+        break;
+    case RGX_CR_BIFPM_STATUS_MMU:
+        name = "RGX_CR_BIFPM_STATUS_MMU LO";
+        break;
+    case RGX_CR_BIFPM_READS_EXT_STATUS:
+        name = "RGX_CR_BIFPM_READS_EXT_STATUS LO";
+        break;
+    case RGX_CR_SLC_STATUS1:
+        name = "RGX_CR_SLC_STATUS1 LO";
+        break;
+    case RGX_CR_SLC_STATUS1 + 4:
+        name = "RGX_CR_SLC_STATUS1 HI";
         break;
     default:
         name = "??";
@@ -392,7 +485,8 @@ static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
     {
         *r = gx6xxx_read32(ctx.coproc, ctx.offset);
     }
-    else if ( vinfo->state == VGX6XXX_STATE_WAITING )
+    else if ( (vinfo->state == VGX6XXX_STATE_WAITING) ||
+              (vinfo->state == VGX6XXX_STATE_IN_TRANSIT) )
     {
     }
     else if ( vinfo->state == VGX6XXX_STATE_INITIALIZING )
@@ -454,7 +548,8 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
         gx6xxx_write32(ctx.coproc, ctx.offset, r);
 
     }
-    else if ( vinfo->state == VGX6XXX_STATE_WAITING )
+    else if ( (vinfo->state == VGX6XXX_STATE_WAITING) ||
+              (vinfo->state == VGX6XXX_STATE_IN_TRANSIT) )
     {
         if ( likely(ctx.offset == RGX_CR_MTS_SCHEDULE) )
         {
@@ -564,14 +659,8 @@ static void gx6xxx_ctx_gpu_save_regs(struct coproc_device *coproc,
                                              RGX_CR_SOFT_RESET_DUST_n_CORE_EN)
 
 static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
-                            struct vgx6xxx_info *vinfo)
+                                struct vgx6xxx_info *vinfo)
 {
-#if 1
-    static bool once = true;
-
-    if (!once)
-        return 0;
-#endif
     /* perform soft-reset */
     gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, RGX_CR_SOFT_RESET_ALL);
     gx6xxx_write64(coproc, RGX_CR_SOFT_RESET,
@@ -603,34 +692,221 @@ static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
     udelay(32);
 
     /* FIXME: if slave is booting then it needs a kick to start */
-#if 1
-    if ( once )
-        once = false;
-#endif
     return 0;
 }
 
-static inline bool gx6xxx_is_irq_pending_unlocked(struct coproc_device *coproc,
-                                                  struct vgx6xxx_info *vinfo)
+int gx6xxx_poll_reg32(struct coproc_device *coproc, uint32_t offset,
+                      uint32_t expected, uint32_t mask)
 {
-    return gx6xxx_read32(coproc, RGXFW_CR_IRQ_STATUS);
+    uint32_t val;
+    int retry = 10;
+
+    gx6xxx_debug = false;
+    do
+    {
+        /* read current register value and mask only those bits requested */
+        val = gx6xxx_read32(coproc, offset) & mask;
+        if ( val == expected )
+        {
+            gx6xxx_debug = true;
+            return 0;
+        }
+        cpu_relax();
+    } while (retry--);
+    printk("%s expected %08x got %08x ))))))))))))))))))))))))))))))))))))))))\n",
+                    __FUNCTION__, expected, val);
+    gx6xxx_debug = true;
+    return -ETIMEDOUT;
 }
 
-static inline bool gx6xxx_is_irq_pending(struct coproc_device *coproc,
-                                         struct vgx6xxx_info *vinfo)
+int gx6xxx_poll_reg64(struct coproc_device *coproc, uint32_t offset,
+                      uint64_t expected, uint64_t mask)
 {
-    bool pending;
-    unsigned long flags;
+    uint64_t val;
+    int retry = 10;
 
-    spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
-    pending = gx6xxx_is_irq_pending_unlocked(coproc, vinfo);
-    spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
-    return pending;
+    gx6xxx_debug = false;
+    do
+    {
+        /* read current register value and mask only those bits requested */
+        val = gx6xxx_read64(coproc, offset) & mask;
+        if ( val == expected )
+        {
+            gx6xxx_debug = true;
+            return 0;
+        }
+        cpu_relax();
+    } while (retry--);
+    gx6xxx_debug = true;
+    printk("%s expected %016lx got %016lx ))))))))))))))))))))))))))))))))))))))))\n",
+                    __FUNCTION__, expected, val);
+    return -ETIMEDOUT;
+}
+
+static int gx6xxx_write_via_slave_port32(struct coproc_device *coproc,
+                                         uint32_t offset,
+                                         uint32_t val)
+{
+    int ret;
+
+    /* Wait for Slave Port to be Ready */
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_META_SP_MSLVCTRL1,
+                          RGX_CR_META_SP_MSLVCTRL1_READY_EN|RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN,
+                          RGX_CR_META_SP_MSLVCTRL1_READY_EN|RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN);
+    if ( ret < 0 )
+        return ret;
+
+    /* Issue a Write */
+    gx6xxx_write32(coproc, RGX_CR_META_SP_MSLVCTRL0, offset);
+    gx6xxx_write32(coproc, RGX_CR_META_SP_MSLVDATAT, val);
+
+    return 0;
+}
+
+/* try stopping the GPU: 0 on success, <0 if still busy */
+static int gx6xxx_ctx_gpu_stop(struct coproc_device *coproc,
+                               struct vgx6xxx_info *vinfo)
+{
+    int ret;
+
+    printk("%s GPU stopping =============================================\n", __FUNCTION__);
+
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_SIDEKICK_IDLE,
+                    RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),
+                    RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN));
+    if ( ret < 0 )
+        return ret;
+
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_SLC_IDLE,
+                            RGX_CR_SLC_IDLE_MASKFULL,
+                            RGX_CR_SLC_IDLE_MASKFULL);
+    if ( ret < 0 )
+        return ret;
+
+    gx6xxx_write32(coproc, RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC,
+                  RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK
+                  & RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_MASKFULL);
+
+    gx6xxx_write32(coproc, RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC,
+                  RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK
+                  & RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_MASKFULL);
+
+    gx6xxx_write32(coproc, RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC,
+                  RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK
+                  & RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_MASKFULL);
+
+    gx6xxx_write32(coproc, RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC,
+                  RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK
+                  & RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_MASKFULL);
+
+    /* Disabling threads is only required for pdumps to stop the fw gracefully */
+
+#define META_CR_CTRLREG_BASE(T)                 (0x04800000 + 0x1000*(T))
+
+#define META_CR_COREREG_ENABLE          (0x0000000)
+#define META_CR_TXENABLE_ENABLE_BIT     (0x00000001)   /* Set if running */
+#define META_CR_T0ENABLE_OFFSET         (META_CR_CTRLREG_BASE(0) + META_CR_COREREG_ENABLE)
+
+    /* Disable thread 0 */
+    ret = gx6xxx_write_via_slave_port32(coproc,
+                                      META_CR_T0ENABLE_OFFSET,
+                                      ~META_CR_TXENABLE_ENABLE_BIT);
+    if ( ret < 0 )
+        return ret;
+
+#define META_CR_T1ENABLE_OFFSET         (META_CR_CTRLREG_BASE(1) + META_CR_COREREG_ENABLE)
+
+    /* Disable thread 1 */
+    ret = gx6xxx_write_via_slave_port32(coproc,
+                                      META_CR_T1ENABLE_OFFSET,
+                                      ~META_CR_TXENABLE_ENABLE_BIT);
+    if ( ret < 0 )
+        return ret;
+
+    /* Clear down any irq raised by META (done after disabling the FW
+     * threads to avoid a race condition).
+     * This is only really needed for PDumps but we do it anyway driver-live.
+     */
+    gx6xxx_write32(coproc, RGX_CR_META_SP_MSLVIRQSTATUS, 0x0);
+
+    /* Wait for the Slave Port to finish all the transactions */
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_META_SP_MSLVCTRL1,
+                          RGX_CR_META_SP_MSLVCTRL1_READY_EN | RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN,
+                          RGX_CR_META_SP_MSLVCTRL1_READY_EN | RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN);
+    if ( ret < 0 )
+        return ret;
+
+    /* Extra Idle checks */
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_BIF_STATUS_MMU,
+                          0,
+                          RGX_CR_BIF_STATUS_MMU_MASKFULL);
+    if ( ret < 0 )
+        return ret;
+
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_BIFPM_STATUS_MMU,
+                          0,
+                          RGX_CR_BIFPM_STATUS_MMU_MASKFULL);
+    if ( ret < 0 )
+        return ret;
+
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_BIFPM_READS_EXT_STATUS,
+                          0,
+                          RGX_CR_BIFPM_READS_EXT_STATUS_MASKFULL);
+    if ( ret < 0 )
+        return ret;
+
+    ret = gx6xxx_poll_reg64(coproc, RGX_CR_SLC_STATUS1,
+                          0,
+                          RGX_CR_SLC_STATUS1_MASKFULL);
+    if ( ret < 0 )
+        return ret;
+
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_SLC_IDLE,
+                          RGX_CR_SLC_IDLE_MASKFULL,
+                          RGX_CR_SLC_IDLE_MASKFULL);
+
+    if ( ret < 0 )
+        return ret;
+
+    ret = gx6xxx_poll_reg32(coproc, RGX_CR_SIDEKICK_IDLE,
+                          RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),
+                          RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN));
+
+    if ( ret < 0 )
+        return ret;
+
+#if 0
+    {
+        IMG_UINT32 ui32RegValue;
+
+        eError = RGXReadMetaRegThroughSP(hPrivate,
+                                         META_CR_TxVECINT_BHALT,
+                                         &ui32RegValue);
+        if (eError != PVRSRV_OK) return eError;
+
+        if ((ui32RegValue & 0xFFFFFFFFU) == 0x0)
+        {
+            /* Wait for Sidekick/Jones to signal IDLE including
+             * the Garten Wrapper if there is no debugger attached
+             * (TxVECINT_BHALT = 0x0) */
+            eError = RGXPollReg32(hPrivate,
+                                  RGX_CR_SIDEKICK_IDLE,
+                                  RGX_CR_SIDEKICK_IDLE_GARTEN_EN,
+                                  RGX_CR_SIDEKICK_IDLE_GARTEN_EN);
+            if (eError != PVRSRV_OK) return eError;
+        }
+    }
+#endif
+
+    printk("%s GPU stopped =============================================\n", __FUNCTION__);
+    return 0;
 }
 
 static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)curr->priv;
+    struct coproc_device *coproc = curr->coproc;
+    s_time_t wait_time = 0;
     unsigned long flags;
 
     printk("%s dom %d\n", __FUNCTION__, curr->domain->domain_id);
@@ -638,43 +914,53 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
     if ( curr->domain->domain_id )
         return 0;
 #endif
-    spin_lock_irqsave(&curr->coproc->vcoprocs_lock, flags);
+    spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
     if ( vinfo->state == VGX6XXX_STATE_RUNNING )
     {
+        int ret;
+
         /* FIXME: go into waiting state now, so from now on all read/write
          * operations do not reach HW
          */
         gx6xxx_set_state(curr, VGX6XXX_STATE_WAITING);
-        /* check if have pending jobs or pending interrupt */
-        if ( gx6xxx_is_irq_pending_unlocked(curr->coproc, vinfo) )
-        {
-            /* have to wait for either interrupt to fire or
-             * interrupt to be served
-             */
-
-            /* unlock, so interrupt can be served */
-            spin_unlock_irqrestore(&curr->coproc->vcoprocs_lock, flags);
-            do
-            {
-                /* burn the CPU */
-                cpu_relax();
-#if 1
-                printk("%s waiting for IRQ dom %d\n", __FUNCTION__,
-                       curr->domain->domain_id);
-                break;
-#endif
-            } while ( gx6xxx_is_irq_pending(curr->coproc, vinfo) );
-            spin_lock_irqsave(&curr->coproc->vcoprocs_lock, flags);
-        }
         gx6xxx_ctx_gpu_save_regs(curr->coproc, vinfo);
+        /* try stopping the GPU */
+        /* FIXME: let late interrupts a chance to fire */
+        spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
+        ret = gx6xxx_ctx_gpu_stop(coproc, vinfo);
+        spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
+        if ( ret < 0 )
+        {
+            wait_time = MILLISECS(1);
+            gx6xxx_set_state(curr, VGX6XXX_STATE_IN_TRANSIT);
+            goto out;
+        }
+    }
+    else if ( vinfo->state == VGX6XXX_STATE_IN_TRANSIT )
+    {
+        int ret;
+
+        gx6xxx_ctx_gpu_save_regs(curr->coproc, vinfo);
+        /* try stopping the GPU harder */
+        /* FIXME: let late interrupts a chance to fire */
+        spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
+        ret = gx6xxx_ctx_gpu_stop(coproc, vinfo);
+        spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
+        if ( ret < 0 )
+        {
+            wait_time = MILLISECS(1);
+            goto out;
+        }
+        gx6xxx_set_state(curr, VGX6XXX_STATE_WAITING);
     }
     else
     {
         gx6xxx_set_state(curr, vinfo->state);
         BUG();
     }
-    spin_unlock_irqrestore(&curr->coproc->vcoprocs_lock, flags);
-    return 0;
+out:
+    spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
+    return wait_time;
 }
 
 static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
