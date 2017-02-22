@@ -39,8 +39,6 @@
 
 enum vgx6xxx_state
 {
-    /* initial state - HW is just like after hard reset */
-    VGX6XXX_STATE_HARD_RESET,
     /* initialization sequence has started - collecting register values
      * so those can be used for real GPU initialization */
     VGX6XXX_STATE_INITIALIZING,
@@ -51,14 +49,12 @@ enum vgx6xxx_state
     /* context is off - queueing requests and interrupts */
     VGX6XXX_STATE_WAITING,
 };
-#define VGX6XXX_STATE_DEFAULT   VGX6XXX_STATE_HARD_RESET
+#define VGX6XXX_STATE_DEFAULT   VGX6XXX_STATE_INITIALIZING
 
 static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
 {
     switch ( state )
     {
-    case VGX6XXX_STATE_HARD_RESET:
-        return "HARD_RESET";
     case VGX6XXX_STATE_INITIALIZING:
         return "INITIALIZING";
     case VGX6XXX_STATE_RUNNING:
@@ -612,9 +608,6 @@ static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
     spin_lock_irqsave(&ctx.coproc->vcoprocs_lock, flags);
     vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 
-    /* FIXME: the very first read/write will change state to initializing */
-    if ( unlikely(vinfo->state == VGX6XXX_STATE_HARD_RESET) )
-        gx6xxx_set_state(ctx.vcoproc, VGX6XXX_STATE_INITIALIZING);
     if ( unlikely((ctx.offset == REG_LO32(RGX_CR_TIMER)) ||
                   (ctx.offset == REG_HI32(RGX_CR_TIMER))) )
     {
@@ -687,8 +680,6 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
     }
 #endif
     /* FIXME: the very first read/write will change state to initializing */
-    if ( unlikely(vinfo->state == VGX6XXX_STATE_HARD_RESET) )
-        gx6xxx_set_state(ctx.vcoproc, VGX6XXX_STATE_INITIALIZING);
     /* allow writing cached IRQ status in any state */
     if (ctx.offset == RGXFW_CR_IRQ_STATUS) {
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
