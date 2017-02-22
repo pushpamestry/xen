@@ -19,6 +19,7 @@
 
 #include <asm/io.h>
 #include <xen/delay.h>
+#include <xen/domain_page.h>
 #include <xen/err.h>
 #include <xen/init.h>
 #include <xen/irq.h>
@@ -117,9 +118,12 @@ struct vgx6xxx_info
      */
     /* FIXME: SLC control register - low 32-bits are used */
     uint32_t reg_val_cr_slc_ctrl_misc_lo;
-    uint64_t reg_val_cr_axi_ace_lite_configuration;
-    /* FIXME: address of kernel page catalog */
-    uint64_t reg_val_cr_bif_cat_base0;
+    uint32_t reg_val_cr_axi_ace_lite_configuration_lo;
+    uint32_t reg_val_cr_axi_ace_lite_configuration_hi;
+    /* FIXME: address of kernel page catalog, MMU page table?
+     */
+    uint32_t reg_val_cr_bif_cat_base0_lo;
+    uint32_t reg_val_cr_bif_cat_base0_hi;
 };
 
 struct gx6xxx_info
@@ -395,6 +399,137 @@ static inline void gx6xxx_write64(struct coproc_device *coproc,
     writeq(val, (char *)coproc->mmios[0].base + offset);
 }
 
+#define RGXFWIF_POW_STATES \
+  X(RGXFWIF_POW_OFF)            /* idle and handshaked with the host (ready to full power down) */ \
+  X(RGXFWIF_POW_ON)             /* running HW mds */ \
+  X(RGXFWIF_POW_FORCED_IDLE)    /* forced idle */ \
+  X(RGXFWIF_POW_IDLE)           /* idle waiting for host handshake */
+
+typedef enum _RGXFWIF_POW_STATE_
+{
+#define X(NAME) NAME,
+    RGXFWIF_POW_STATES
+#undef X
+} RGXFWIF_POW_STATE;
+
+#define RGXFW_TRACE_BUFFER_LINESIZE (30)
+
+/*! Total size of RGXFWIF_TRACEBUF dword (needs to be a multiple of RGXFW_TRACE_BUFFER_LINESIZE) */
+#define RGXFW_TRACE_BUFFER_SIZE     (400*RGXFW_TRACE_BUFFER_LINESIZE)
+#define RGXFW_TRACE_BUFFER_ASSERT_SIZE 200
+
+typedef struct _RGXFWIF_ASSERTBUF_
+{
+    char    szPath[RGXFW_TRACE_BUFFER_ASSERT_SIZE];
+    char    szInfo[RGXFW_TRACE_BUFFER_ASSERT_SIZE];
+    uint32_t  ui32LineNum;
+} __attribute__ ((aligned (8))) RGXFWIF_ASSERTBUF;
+
+typedef struct _RGXFWIF_TRACEBUF_SPACE_
+{
+    uint32_t          ui32TracePointer;
+
+    uint32_t pui32RGXFWIfTraceBuffer;
+    uint32_t *pui32TraceBuffer;   /* To be used by host when reading from trace buffer */
+
+    RGXFWIF_ASSERTBUF   sAssertBuf;
+} __attribute__ ((aligned (8))) RGXFWIF_TRACEBUF_SPACE;
+
+#define RGXFW_THREAD_NUM 1
+#define RGXFWIF_DM_MAX          (5)
+#define RGXFWIF_HWDM_MAX        (RGXFWIF_DM_MAX)
+
+/* Firmware HWR states */
+#define RGXFWIF_HWR_HARDWARE_OK     (0x1 << 0)  /*!< Tells if the HW state is ok or locked up */
+#define RGXFWIF_HWR_ANALYSIS_DONE   (0x1 << 2)  /*!< Tells if the analysis of a GPU lockup has already been performed */
+#define RGXFWIF_HWR_GENERAL_LOCKUP  (0x1 << 3)  /*!< Tells if a DM unrelated lockup has been detected */
+typedef uint32_t RGXFWIF_HWR_STATEFLAGS;
+
+#define RGXFW_OS_STATE_ACTIVE_OS                    (1 << 0)    /*!< Non active operating systems should not be served by the FW */
+#define RGXFW_OS_STATE_FREELIST_OK                  (1 << 1)    /*!< Pending freelist reconstruction from that particular OS */
+#define RGXFW_OS_STATE_OFFLOADING                   (1 << 2)    /*!< Transient state while all the OS resources in the FW are cleaned up */
+
+typedef uint32_t RGXFWIF_HWR_RECOVERYFLAGS;
+
+typedef struct _RGXFWIF_TRACEBUF_
+{
+    uint32_t              ui32LogType;
+    volatile RGXFWIF_POW_STATE      ePowState;
+    RGXFWIF_TRACEBUF_SPACE  sTraceBuf[RGXFW_THREAD_NUM];
+
+    uint32_t              aui32HwrDmLockedUpCount[RGXFWIF_DM_MAX];
+    uint32_t              aui32HwrDmOverranCount[RGXFWIF_DM_MAX];
+    uint32_t              aui32HwrDmRecoveredCount[RGXFWIF_DM_MAX];
+    uint32_t              aui32HwrDmFalseDetectCount[RGXFWIF_DM_MAX];
+    uint32_t              ui32HwrCounter;
+
+    uint32_t              aui32CrPollAddr[RGXFW_THREAD_NUM];
+    uint32_t              aui32CrPollMask[RGXFW_THREAD_NUM];
+
+    RGXFWIF_HWR_STATEFLAGS      ui32HWRStateFlags;
+    RGXFWIF_HWR_RECOVERYFLAGS   aui32HWRRecoveryFlags[RGXFWIF_HWDM_MAX];
+
+    volatile uint32_t     ui32HWPerfRIdx;
+    volatile uint32_t     ui32HWPerfWIdx;
+    volatile uint32_t     ui32HWPerfWrapCount;
+    uint32_t              ui32HWPerfSize;       /* Constant after setup, needed in FW */
+    uint32_t              ui32HWPerfDropCount;  /* The number of times the FW drops a packet due to buffer full */
+
+    /* These next three items are only valid at runtime when the FW is built
+     * with RGX_HWPERF_UTILIZATION & RGX_HWPERF_DROP_TRACKING defined
+     * in rgxfw_hwperf.c */
+    uint32_t              ui32HWPerfUt;         /* Buffer utilisation, high watermark of bytes in use */
+    uint32_t              ui32FirstDropOrdinal;/* The ordinal of the first packet the FW dropped */
+    uint32_t              ui32LastDropOrdinal; /* The ordinal of the last packet the FW dropped */
+
+    volatile uint32_t         aui32InterruptCount[RGXFW_THREAD_NUM]; /*!< Interrupt count from Threads > */
+    uint32_t              ui32KCCBCmdsExecuted;
+    uint64_t  __attribute__ ((aligned (8)))          ui64StartIdleTime;
+    uint32_t              ui32PowMonEnergy;   /* Non-volatile power monitor energy count */
+
+#define RGXFWIF_MAX_PCX 16
+    uint32_t              ui32T1PCX[RGXFWIF_MAX_PCX];
+    uint32_t              ui32T1PCXWOff;
+
+    uint32_t                  ui32OSStateFlags[1];     /*!< State flags for each Operating System > */
+} __attribute__ ((aligned (8))) RGXFWIF_TRACEBUF;
+
+static void gx6xxx_shared_page_print_irq(struct vcoproc_instance *vcoproc,
+                                   struct vgx6xxx_info *vinfo)
+{
+    mfn_t mfn;
+    uint32_t *vaddr = NULL;
+    uint64_t ipa;
+
+    ipa = vinfo->reg_val_cr_bif_cat_base0_lo |
+          (uint64_t)vinfo->reg_val_cr_bif_cat_base0_hi << 32;
+    printk("Map IPA %lx\n", ipa);
+    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+    printk("MFN is %lx\n", mfn);
+    if ( mfn_eq(mfn, INVALID_MFN) )
+    {
+        printk("Failed to lookup BIF catalog base address\n");
+        return;
+    }
+
+    flush_page_to_ram(mfn);
+    vaddr = (uint32_t *)map_domain_page(mfn);
+//    printk("===================================aui32InterruptCount %d\n", vaddr->aui32InterruptCount[0]);
+    {
+        int i, j;
+        uint32_t *ptr = (uint32_t *)vaddr;
+
+        for (i = 0; i < 4096 / sizeof(uint32_t) / 4; i++)
+        {
+            for (j = 0; j < 4; j++)
+                printk(" %08x", *ptr++);
+            printk("\n");
+        }
+    }
+
+    if (vaddr)
+        unmap_domain_page(vaddr);
+}
 static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
                                          struct vgx6xxx_info *vinfo)
 {
@@ -439,6 +574,24 @@ static bool gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
         break;
     case REG_HI32(RGX_CR_MTS_GARTEN_WRAPPER_CONFIG):
         gx6xxx_store32(offset, &vinfo->reg_val_cr_mts_garten_wrapper_config_hi,
+                       val);
+        break;
+    case REG_LO32(RGX_CR_BIF_CAT_BASE0):
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_bif_cat_base0_lo, val);
+        break;
+    case REG_HI32(RGX_CR_BIF_CAT_BASE0):
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_bif_cat_base0_hi, val);
+        break;
+    case REG_LO32(RGX_CR_SLC_CTRL_MISC):
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_slc_ctrl_misc_lo,
+                       val);
+        break;
+    case REG_LO32(RGX_CR_AXI_ACE_LITE_CONFIGURATION):
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_axi_ace_lite_configuration_lo,
+                       val);
+        break;
+    case REG_HI32(RGX_CR_AXI_ACE_LITE_CONFIGURATION):
+        gx6xxx_store32(offset, &vinfo->reg_val_cr_axi_ace_lite_configuration_hi,
                        val);
         break;
     default:
@@ -588,6 +741,9 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     unsigned long flags;
 
     printk("> %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
+
+    gx6xxx_shared_page_print_irq(info->curr, info->curr->priv);
+
     spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
 #if 0
     irq_status = readl(info->reg_vaddr_irq_status);
@@ -619,17 +775,6 @@ static const struct mmio_handler_ops gx6xxx_mmio_handler = {
     .read = gx6xxx_mmio_read,
     .write = gx6xxx_mmio_write,
 };
-
-static void gx6xxx_ctx_gpu_save_regs(struct coproc_device *coproc,
-                                     struct vgx6xxx_info *vinfo)
-{
-    vinfo->reg_val_cr_slc_ctrl_misc_lo =
-        gx6xxx_read32(coproc, REG_LO32(RGX_CR_SLC_CTRL_MISC));
-    vinfo->reg_val_cr_axi_ace_lite_configuration =
-        gx6xxx_read64(coproc, RGX_CR_AXI_ACE_LITE_CONFIGURATION);
-    vinfo->reg_val_cr_bif_cat_base0 =
-        gx6xxx_read64(coproc, RGX_CR_BIF_CAT_BASE0);
-}
 
 #define RGX_CR_SOFT_RESET_MASKFULL          (0x00E7FFFFFFFFFC1D)
 #define RGX_CR_SOFT_RESET_ALL               (RGX_CR_SOFT_RESET_MASKFULL)
@@ -678,9 +823,11 @@ static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
                    vinfo->reg_val_cr_mts_garten_wrapper_config_lo |
                    (uint64_t)vinfo->reg_val_cr_mts_garten_wrapper_config_hi << 32);
     gx6xxx_write64(coproc, RGX_CR_AXI_ACE_LITE_CONFIGURATION,
-                   vinfo->reg_val_cr_axi_ace_lite_configuration);
+                   vinfo->reg_val_cr_axi_ace_lite_configuration_lo |
+                   (uint64_t)vinfo->reg_val_cr_axi_ace_lite_configuration_hi << 32);
     gx6xxx_write64(coproc, RGX_CR_BIF_CAT_BASE0,
-                   vinfo->reg_val_cr_bif_cat_base0);
+                   vinfo->reg_val_cr_bif_cat_base0_lo |
+                   (uint64_t)vinfo->reg_val_cr_bif_cat_base0_hi << 32);
 
     /* wait for at least 16 cycles */
     udelay(32);
@@ -877,7 +1024,7 @@ static int gx6xxx_ctx_gpu_stop(struct coproc_device *coproc,
 
 #if 0
     {
-        IMG_UINT32 ui32RegValue;
+        uint32_t ui32RegValue;
 
         eError = RGXReadMetaRegThroughSP(hPrivate,
                                          META_CR_TxVECINT_BHALT,
@@ -923,7 +1070,6 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
          * operations do not reach HW
          */
         gx6xxx_set_state(curr, VGX6XXX_STATE_WAITING);
-        gx6xxx_ctx_gpu_save_regs(curr->coproc, vinfo);
         /* try stopping the GPU */
         /* FIXME: let late interrupts a chance to fire */
         spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
@@ -940,7 +1086,6 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
     {
         int ret;
 
-        gx6xxx_ctx_gpu_save_regs(curr->coproc, vinfo);
         /* try stopping the GPU harder */
         /* FIXME: let late interrupts a chance to fire */
         spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
