@@ -63,6 +63,9 @@ extern "C" {
  */
 #if defined(_MSC_VER)
 	#include "msvc_types.h"
+#elif defined(__XEN__)
+    #include <xen/types.h>
+    #define UINT64_C(v) v ## ULL
 #elif defined(LINUX) && defined(__KERNEL__)
 	#include <linux/types.h>
 	#include "kernel_types.h"

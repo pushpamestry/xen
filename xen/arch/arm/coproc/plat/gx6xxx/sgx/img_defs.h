@@ -45,7 +45,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #if !defined (__IMG_DEFS_H__)
 #define __IMG_DEFS_H__
 
-#include <stddef.h>
+#if !defined(__XEN__)
+    #include <stddef.h>
+#endif
 
 #include "img_types.h"
 
@@ -243,7 +245,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /* Kernel macros for compiler attributes */
 /* Note: param positions start at 1 */
-#if defined(LINUX) && defined(__KERNEL__)
+#if defined(__XEN__)
+    #include <xen/compiler.h>
+#elif defined(LINUX) && defined(__KERNEL__)
 	#include <linux/compiler.h>
 #elif defined(__GNUC__) || defined(HAS_GNUC_ATTRIBUTES)
 	#define __must_check       __attribute__((warn_unused_result))
@@ -284,7 +288,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 /* GCC builtins */
-#if defined(LINUX) && defined(__KERNEL__)
+#if defined(__XEN__)
+    #include <xen/compiler.h>
+#elif defined(LINUX) && defined(__KERNEL__)
 	#include <linux/compiler.h>
 #elif defined(__GNUC__)
 	#define likely(x)   __builtin_expect(!!(x), 1)
