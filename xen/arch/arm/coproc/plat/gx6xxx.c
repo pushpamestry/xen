@@ -116,7 +116,8 @@ struct vgx6xxx_info
     uint32_t reg_val_cr_slc_ctrl_misc_lo;
     uint32_t reg_val_cr_axi_ace_lite_configuration_lo;
     uint32_t reg_val_cr_axi_ace_lite_configuration_hi;
-    /* FIXME: address of kernel page catalog, MMU page table?
+    /* FIXME: address of kernel page catalog, MMU PC
+     * FIXME: PD and PC are fixed size and can't be larger than page size
      */
     uint32_t reg_val_cr_bif_cat_base0_lo;
     uint32_t reg_val_cr_bif_cat_base0_hi;
@@ -395,100 +396,179 @@ static inline void gx6xxx_write64(struct coproc_device *coproc,
     writeq(val, (char *)coproc->mmios[0].base + offset);
 }
 
-#define RGXFWIF_POW_STATES \
-  X(RGXFWIF_POW_OFF)            /* idle and handshaked with the host (ready to full power down) */ \
-  X(RGXFWIF_POW_ON)             /* running HW mds */ \
-  X(RGXFWIF_POW_FORCED_IDLE)    /* forced idle */ \
-  X(RGXFWIF_POW_IDLE)           /* idle waiting for host handshake */
+/* Setup of Px Entries:
+ *
+ *
+ * PAGE TABLE (8 Byte):
+ *
+ * | 62              | 61...40         | 39...12 (varies) | 11...6          | 5             | 4      | 3               | 2               | 1         | 0     |
+ * | PM/Meta protect | VP Page (39:18) | Physical Page    | VP Page (17:12) | Entry Pending | PM src | SLC Bypass Ctrl | Cache Coherency | Read Only | Valid |
+ *
+ *
+ * PAGE DIRECTORY (8 Byte):
+ *
+ *  | 40            | 39...5  (varies)        | 4          | 3...1     | 0     |
+ *  | Entry Pending | Page Table base address | (reserved) | Page Size | Valid |
+ *
+ *
+ * PAGE CATALOGUE (4 Byte):
+ *
+ *  | 31...4                      | 3...2      | 1             | 0     |
+ *  | Page Directory base address | (reserved) | Entry Pending | Valid |
+ *
+ */
 
-typedef enum _RGXFWIF_POW_STATE_
+#define RGX_MMUCTRL_PC_DATA_VALID   (1U)
+#define RGX_MMUCTRL_PC_DATA_PD_BASE (4U)
+
+static inline uint32_t get_pd(uint32_t pce)
 {
-#define X(NAME) NAME,
-    RGXFWIF_POW_STATES
-#undef X
-} RGXFWIF_POW_STATE;
+    /* FIXME: PAGE_SHIFT in the kernel may differ from Xen,
+     * but otherwise it will not work at all
+     */
+    if ( likely(!(pce & RGX_MMUCTRL_PC_DATA_VALID)) )
+        return 0;
+    return (pce >> RGX_MMUCTRL_PC_DATA_PD_BASE) << PAGE_SHIFT;
+}
 
-#define RGXFW_TRACE_BUFFER_LINESIZE (30)
+#define RGX_MMUCTRL_PD_DATA_VALID            (1U)
+#define RGX_MMUCTRL_PD_DATA_PT_PSIZE_SHIFT         (1U)
+#define RGX_MMUCTRL_PD_DATA_PT_PSIZE_MASK    (0x1f)
+#define RGX_MMUCTRL_PD_DATA_PT_BASE          (5U)
+#define RGX_MMUCTRL_PD_DATA_PT_BASE_MSK      (~0XFFFFFF000000001F)
 
-/*! Total size of RGXFWIF_TRACEBUF dword (needs to be a multiple of RGXFW_TRACE_BUFFER_LINESIZE) */
-#define RGXFW_TRACE_BUFFER_SIZE     (400*RGXFW_TRACE_BUFFER_LINESIZE)
-#define RGXFW_TRACE_BUFFER_ASSERT_SIZE 200
+#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_4KB    (0000000000000000)
+#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_16KB   (0x0000000000000002)
+#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_64KB   (0x0000000000000004)
+#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_256KB  (0x0000000000000006)
+#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_1MB    (0x0000000000000008)
+#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_2MB    (0x000000000000000a)
 
-typedef struct _RGXFWIF_ASSERTBUF_
+static inline uint64_t get_pt(uint64_t pde, int *size)
 {
-    char    szPath[RGXFW_TRACE_BUFFER_ASSERT_SIZE];
-    char    szInfo[RGXFW_TRACE_BUFFER_ASSERT_SIZE];
-    uint32_t  ui32LineNum;
-} __attribute__ ((aligned (8))) RGXFWIF_ASSERTBUF;
+    /* FIXME: PAGE_SHIFT in the kernel may differ from Xen,
+     * but otherwise it will not work at all
+     */
+    /* FIXME: most of the entries are 0 */
+    if ( likely(!(pde & RGX_MMUCTRL_PD_DATA_VALID)) )
+        return 0;
+    *size = (pde >> RGX_MMUCTRL_PD_DATA_PT_PSIZE_SHIFT) & RGX_MMUCTRL_PD_DATA_PT_PSIZE_MASK;
+    return (pde & RGX_MMUCTRL_PD_DATA_PT_BASE_MSK);
+}
 
-typedef struct _RGXFWIF_TRACEBUF_SPACE_
+#define RGX_MMUCTRL_PT_DATA_PAGE_MSK        (~0XFFFFFF0000000FFF)
+#define RGX_MMUCTRL_PT_DATA_VALID_EN        (0X0000000000000001)
+
+static inline uint64_t get_pte_addr(uint64_t pte)
 {
-    uint32_t          ui32TracePointer;
+    /* FIXME: PAGE_SHIFT in the kernel may differ from Xen,
+     * but otherwise it will not work at all
+     */
+    /* FIXME: most of the entries are 0 */
+    if ( likely(!(pte & RGX_MMUCTRL_PT_DATA_VALID_EN)) )
+        return 0;
+    return (pte & RGX_MMUCTRL_PT_DATA_PAGE_MSK);
+}
 
-    uint32_t pui32RGXFWIfTraceBuffer;
-    uint32_t *pui32TraceBuffer;   /* To be used by host when reading from trace buffer */
-
-    RGXFWIF_ASSERTBUF   sAssertBuf;
-} __attribute__ ((aligned (8))) RGXFWIF_TRACEBUF_SPACE;
-
-#define RGXFW_THREAD_NUM 1
-#define RGXFWIF_DM_MAX          (5)
-#define RGXFWIF_HWDM_MAX        (RGXFWIF_DM_MAX)
-
-/* Firmware HWR states */
-#define RGXFWIF_HWR_HARDWARE_OK     (0x1 << 0)  /*!< Tells if the HW state is ok or locked up */
-#define RGXFWIF_HWR_ANALYSIS_DONE   (0x1 << 2)  /*!< Tells if the analysis of a GPU lockup has already been performed */
-#define RGXFWIF_HWR_GENERAL_LOCKUP  (0x1 << 3)  /*!< Tells if a DM unrelated lockup has been detected */
-typedef uint32_t RGXFWIF_HWR_STATEFLAGS;
-
-#define RGXFW_OS_STATE_ACTIVE_OS                    (1 << 0)    /*!< Non active operating systems should not be served by the FW */
-#define RGXFW_OS_STATE_FREELIST_OK                  (1 << 1)    /*!< Pending freelist reconstruction from that particular OS */
-#define RGXFW_OS_STATE_OFFLOADING                   (1 << 2)    /*!< Transient state while all the OS resources in the FW are cleaned up */
-
-typedef uint32_t RGXFWIF_HWR_RECOVERYFLAGS;
-
-typedef struct _RGXFWIF_TRACEBUF_
+static void gx6xxx_shared_page_find(struct vcoproc_instance *vcoproc,
+                                    struct vgx6xxx_info *vinfo)
 {
-    uint32_t              ui32LogType;
-    volatile RGXFWIF_POW_STATE      ePowState;
-    RGXFWIF_TRACEBUF_SPACE  sTraceBuf[RGXFW_THREAD_NUM];
+    int pc_idx;
+    uint32_t *pc, *pce;
+    uint64_t ipa;
+    mfn_t mfn;
 
-    uint32_t              aui32HwrDmLockedUpCount[RGXFWIF_DM_MAX];
-    uint32_t              aui32HwrDmOverranCount[RGXFWIF_DM_MAX];
-    uint32_t              aui32HwrDmRecoveredCount[RGXFWIF_DM_MAX];
-    uint32_t              aui32HwrDmFalseDetectCount[RGXFWIF_DM_MAX];
-    uint32_t              ui32HwrCounter;
+    /* FIXME: reg_val_cr_bif_cat_base0 has a physical address of the page
+     * catalog (PC) which is one page */
+    /* FIXME: only one page must be in PC which is page directory (PD) */
 
-    uint32_t              aui32CrPollAddr[RGXFW_THREAD_NUM];
-    uint32_t              aui32CrPollMask[RGXFW_THREAD_NUM];
+    /* FIXME: PCE is 4 bytes */
+#define PCE_SIZE    sizeof(uint32_t)
+    /* FIXME: PDE is 8 bytes */
+#define PDE_SIZE    sizeof(uint64_t)
+    /* FIXME: PTE is 8 bytes */
+#define PTE_SIZE    sizeof(uint64_t)
 
-    RGXFWIF_HWR_STATEFLAGS      ui32HWRStateFlags;
-    RGXFWIF_HWR_RECOVERYFLAGS   aui32HWRRecoveryFlags[RGXFWIF_HWDM_MAX];
+    ipa = vinfo->reg_val_cr_bif_cat_base0_lo |
+          (uint64_t)vinfo->reg_val_cr_bif_cat_base0_hi << 32;
+    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+    printk("Page catalog IPA %lx MFN %lx\n", ipa, mfn);
+    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
+    {
+        printk("Failed to lookup BIF catalog base address\n");
+        return;
+    }
+    pc = (uint32_t *)map_domain_page(mfn);
+    if ( unlikely(!pc) )
+    {
+        printk("Failed to map page catalog\n");
+        goto out;
+    }
+    pce = pc;
+    for (pc_idx = 0; pc_idx < PAGE_SIZE/PCE_SIZE; pc_idx++)
+    {
+        uint32_t pd_ipa;
 
-    volatile uint32_t     ui32HWPerfRIdx;
-    volatile uint32_t     ui32HWPerfWIdx;
-    volatile uint32_t     ui32HWPerfWrapCount;
-    uint32_t              ui32HWPerfSize;       /* Constant after setup, needed in FW */
-    uint32_t              ui32HWPerfDropCount;  /* The number of times the FW drops a packet due to buffer full */
+        pd_ipa = get_pd(*pce++);
+        if ( pd_ipa )
+        {
+            uint64_t *pd, *pde;
+            int pd_idx;
 
-    /* These next three items are only valid at runtime when the FW is built
-     * with RGX_HWPERF_UTILIZATION & RGX_HWPERF_DROP_TRACKING defined
-     * in rgxfw_hwperf.c */
-    uint32_t              ui32HWPerfUt;         /* Buffer utilisation, high watermark of bytes in use */
-    uint32_t              ui32FirstDropOrdinal;/* The ordinal of the first packet the FW dropped */
-    uint32_t              ui32LastDropOrdinal; /* The ordinal of the last packet the FW dropped */
+            mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(pd_ipa)), NULL);
+            printk("Page directory IPA %x MFN %lx\n", pd_ipa, mfn);
+            if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
+            {
+                printk("Failed to lookup page directory address\n");
+                return;
+            }
+            pd = (uint64_t *)map_domain_page(mfn);
+            if ( unlikely(!pd) )
+            {
+                printk("Failed to map page directory\n");
+                goto out;
+            }
+            pde = pd;
+            for (pd_idx = 0; pd_idx < PAGE_SIZE/PDE_SIZE; pd_idx++)
+            {
+                uint64_t pt_ipa;
+                uint64_t *pt, *pte;
+                int size, pt_idx;
 
-    volatile uint32_t         aui32InterruptCount[RGXFW_THREAD_NUM]; /*!< Interrupt count from Threads > */
-    uint32_t              ui32KCCBCmdsExecuted;
-    uint64_t  __attribute__ ((aligned (8)))          ui64StartIdleTime;
-    uint32_t              ui32PowMonEnergy;   /* Non-volatile power monitor energy count */
-
-#define RGXFWIF_MAX_PCX 16
-    uint32_t              ui32T1PCX[RGXFWIF_MAX_PCX];
-    uint32_t              ui32T1PCXWOff;
-
-    uint32_t                  ui32OSStateFlags[1];     /*!< State flags for each Operating System > */
-} __attribute__ ((aligned (8))) RGXFWIF_TRACEBUF;
+                pt_ipa = get_pt(*pde++, &size);
+                if ( pt_ipa )
+                {
+                    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(pt_ipa)), NULL);
+                    printk("Page table IPA %lx MFN %lx size %d\n", pt_ipa, mfn, size);
+                    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
+                    {
+                        printk("Failed to lookup page table address\n");
+                        return;
+                    }
+                    pt = (uint64_t *)map_domain_page(mfn);
+                    if ( unlikely(!pt) )
+                    {
+                        printk("Failed to map page table\n");
+                        goto out;
+                    }
+                    pte = pt;
+                    for (pt_idx = 0; pt_idx < PAGE_SIZE/PTE_SIZE; pt_idx++)
+                    {
+                        uint64_t paddr = get_pte_addr(*pte++);
+                        if ( paddr )
+                            printk("paddr %lx\n", paddr);
+                    }
+                    unmap_domain_page(pt);
+                }
+            }
+            unmap_domain_page(pd);
+            break;
+        }
+    }
+out:
+    if (pc)
+        unmap_domain_page(pc);
+}
 
 static void gx6xxx_shared_page_print_irq(struct vcoproc_instance *vcoproc,
                                    struct vgx6xxx_info *vinfo)
@@ -497,6 +577,7 @@ static void gx6xxx_shared_page_print_irq(struct vcoproc_instance *vcoproc,
     uint32_t *vaddr = NULL;
     uint64_t ipa;
 
+    return;
     ipa = vinfo->reg_val_cr_bif_cat_base0_lo |
           (uint64_t)vinfo->reg_val_cr_bif_cat_base0_hi << 32;
     printk("Map IPA %lx\n", ipa);
@@ -510,7 +591,6 @@ static void gx6xxx_shared_page_print_irq(struct vcoproc_instance *vcoproc,
 
     flush_page_to_ram(mfn);
     vaddr = (uint32_t *)map_domain_page(mfn);
-//    printk("===================================aui32InterruptCount %d\n", vaddr->aui32InterruptCount[0]);
     {
         int i, j;
         uint32_t *ptr = (uint32_t *)vaddr;
@@ -537,6 +617,7 @@ static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
     {
         if ( likely(!vinfo->scheduler_started) )
         {
+            gx6xxx_shared_page_find(vcoproc, vinfo);
             dev_dbg(vcoproc->coproc->dev, "Domain %d start condition met\n",
                     vcoproc->domain->domain_id);
             start = true;
@@ -734,6 +815,15 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     printk("> %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
 
     gx6xxx_shared_page_print_irq(info->curr, info->curr->priv);
+    {
+        static bool once = true;
+
+        if (once)
+        {
+            once = false;
+            gx6xxx_shared_page_find(info->curr, info->curr->priv);
+        }
+    }
 
     spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
 #if 0
