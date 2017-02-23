@@ -25,10 +25,8 @@
 #include <xen/irq.h>
 #include <xen/vmap.h>
 
-#include "../../coproc.h"
-#include "../common.h"
+#include "gx6xxx_coproc.h"
 #include "gx6xxx_mmu.h"
-#include "config_kernel.h"
 #include "rgxdefs_km.h"
 
 #define DT_MATCH_GX6XXX DT_MATCH_COMPATIBLE("renesas,gsx")
@@ -39,20 +37,6 @@
 #if 1
 #define GX6XXX_DEBUG 1
 #endif
-
-enum vgx6xxx_state
-{
-    /* initialization sequence has started - collecting register values
-     * so those can be used for real GPU initialization */
-    VGX6XXX_STATE_INITIALIZING,
-    /* scheduler is running, at least one context switch was made */
-    VGX6XXX_STATE_RUNNING,
-    /* asked to switch from but waiting for GPU to finish current jobs */
-    VGX6XXX_STATE_IN_TRANSIT,
-    /* context is off - queueing requests and interrupts */
-    VGX6XXX_STATE_WAITING,
-};
-#define VGX6XXX_STATE_DEFAULT   VGX6XXX_STATE_INITIALIZING
 
 static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
 {
@@ -70,67 +54,6 @@ static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
         return "-=UNKNOWN=-";
     }
 }
-
-union reg64_t
-{
-    struct
-    {
-        uint32_t lo;
-        uint32_t hi;
-    } as;
-    uint64_t val;
-};
-
-struct vgx6xxx_info
-{
-    /* current state of the vcoproc */
-    enum vgx6xxx_state state;
-
-    /* set if scheduler has been started for this vcoproc */
-    bool scheduler_started;
-
-    /*
-     ***************************************************************************
-     *                           REGISTERS
-     ***************************************************************************
-     */
-    /* This is the current IRQ status register value reported/updated
-     * to/from domains. Set on real IRQ from GPU, low 32-bits
-     */
-    union reg64_t reg_val_irq_status;
-    /* Current value of the soft reset register, used to determine
-     * when FW starts to run
-     */
-    union reg64_t reg_val_cr_soft_reset;
-
-    /* number of writes to RGX_CR_MTS_SCHEDULE while not in running state */
-    int reg_cr_mts_schedule_lo_wait_cnt;
-
-    /*
-     ***************************************************************************
-     * FIXME: Value of the registers below must be saved on write
-     ***************************************************************************
-     */
-    /* FIXME: META boot control register - low 32-bits are used */
-    /* FIXME: this must be tracked when written, reset on read */
-    union reg64_t reg_val_cr_meta_boot;
-
-    union reg64_t reg_val_cr_mts_garten_wrapper_config;
-
-    /*
-     ***************************************************************************
-     * FIXME: Value of the registers remain constant once written
-     * and can be read back
-     ***************************************************************************
-     */
-    /* FIXME: SLC control register - low 32-bits are used */
-    union reg64_t reg_val_cr_slc_ctrl_misc;
-    union reg64_t reg_val_cr_axi_ace_lite_configuration;
-    /* FIXME: address of kernel page catalog, MMU PC
-     * FIXME: PD and PC are fixed size and can't be larger than page size
-     */
-    union reg64_t reg_val_cr_bif_cat_base0;
-};
 
 struct gx6xxx_info
 {
@@ -333,179 +256,6 @@ static inline void gx6xxx_write64(struct coproc_device *coproc,
     writeq(val, (char *)coproc->mmios[0].base + offset);
 }
 
-/* Setup of Px Entries:
- *
- *
- * PAGE TABLE (8 Byte):
- *
- * | 62              | 61...40         | 39...12 (varies) | 11...6          | 5             | 4      | 3               | 2               | 1         | 0     |
- * | PM/Meta protect | VP Page (39:18) | Physical Page    | VP Page (17:12) | Entry Pending | PM src | SLC Bypass Ctrl | Cache Coherency | Read Only | Valid |
- *
- *
- * PAGE DIRECTORY (8 Byte):
- *
- *  | 40            | 39...5  (varies)        | 4          | 3...1     | 0     |
- *  | Entry Pending | Page Table base address | (reserved) | Page Size | Valid |
- *
- *
- * PAGE CATALOGUE (4 Byte):
- *
- *  | 31...4                      | 3...2      | 1             | 0     |
- *  | Page Directory base address | (reserved) | Entry Pending | Valid |
- *
- */
-
-#define RGX_MMUCTRL_PC_DATA_VALID   (1U)
-#define RGX_MMUCTRL_PC_DATA_PD_BASE (4U)
-
-static inline uint32_t get_pd(uint32_t pce)
-{
-    /* FIXME: PAGE_SHIFT in the kernel may differ from Xen,
-     * but otherwise it will not work at all
-     */
-    if ( likely(!(pce & RGX_MMUCTRL_PC_DATA_VALID)) )
-        return 0;
-    return (pce >> RGX_MMUCTRL_PC_DATA_PD_BASE) << PAGE_SHIFT;
-}
-
-#define RGX_MMUCTRL_PD_DATA_VALID            (1U)
-#define RGX_MMUCTRL_PD_DATA_PT_PSIZE_SHIFT         (1U)
-#define RGX_MMUCTRL_PD_DATA_PT_PSIZE_MASK    (0x1f)
-#define RGX_MMUCTRL_PD_DATA_PT_BASE          (5U)
-#define RGX_MMUCTRL_PD_DATA_PT_BASE_MSK      (~0XFFFFFF000000001F)
-
-#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_4KB    (0000000000000000)
-#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_16KB   (0x0000000000000002)
-#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_64KB   (0x0000000000000004)
-#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_256KB  (0x0000000000000006)
-#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_1MB    (0x0000000000000008)
-#define RGX_MMUCTRL_PD_DATA_PAGE_SIZE_2MB    (0x000000000000000a)
-
-static inline uint64_t get_pt(uint64_t pde, int *size)
-{
-    /* FIXME: PAGE_SHIFT in the kernel may differ from Xen,
-     * but otherwise it will not work at all
-     */
-    /* FIXME: most of the entries are 0 */
-    if ( likely(!(pde & RGX_MMUCTRL_PD_DATA_VALID)) )
-        return 0;
-    *size = (pde >> RGX_MMUCTRL_PD_DATA_PT_PSIZE_SHIFT) & RGX_MMUCTRL_PD_DATA_PT_PSIZE_MASK;
-    return (pde & RGX_MMUCTRL_PD_DATA_PT_BASE_MSK);
-}
-
-#define RGX_MMUCTRL_PT_DATA_PAGE_MSK        (~0XFFFFFF0000000FFF)
-#define RGX_MMUCTRL_PT_DATA_VALID_EN        (0X0000000000000001)
-
-static inline uint64_t get_pte_addr(uint64_t pte)
-{
-    /* FIXME: PAGE_SHIFT in the kernel may differ from Xen,
-     * but otherwise it will not work at all
-     */
-    /* FIXME: most of the entries are 0 */
-    if ( likely(!(pte & RGX_MMUCTRL_PT_DATA_VALID_EN)) )
-        return 0;
-    return (pte & RGX_MMUCTRL_PT_DATA_PAGE_MSK);
-}
-
-static void gx6xxx_shared_page_find(struct vcoproc_instance *vcoproc,
-                                    struct vgx6xxx_info *vinfo)
-{
-    int pc_idx;
-    uint32_t *pc, *pce;
-    uint64_t ipa;
-    mfn_t mfn;
-
-    /* FIXME: reg_val_cr_bif_cat_base0 has a physical address of the page
-     * catalog (PC) which is one page */
-    /* FIXME: only one page must be in PC which is page directory (PD) */
-
-    /* FIXME: PCE is 4 bytes */
-#define PCE_SIZE    sizeof(uint32_t)
-    /* FIXME: PDE is 8 bytes */
-#define PDE_SIZE    sizeof(uint64_t)
-    /* FIXME: PTE is 8 bytes */
-#define PTE_SIZE    sizeof(uint64_t)
-
-    ipa = vinfo->reg_val_cr_bif_cat_base0.val;
-    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-    printk("Page catalog IPA %lx MFN %lx\n", ipa, mfn);
-    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
-    {
-        printk("Failed to lookup BIF catalog base address\n");
-        return;
-    }
-    pc = (uint32_t *)map_domain_page(mfn);
-    if ( unlikely(!pc) )
-    {
-        printk("Failed to map page catalog\n");
-        goto out;
-    }
-    pce = pc;
-    for (pc_idx = 0; pc_idx < PAGE_SIZE/PCE_SIZE; pc_idx++)
-    {
-        uint32_t pd_ipa;
-
-        pd_ipa = get_pd(*pce++);
-        if ( pd_ipa )
-        {
-            uint64_t *pd, *pde;
-            int pd_idx;
-
-            mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(pd_ipa)), NULL);
-            printk("Page directory IPA %x MFN %lx\n", pd_ipa, mfn);
-            if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
-            {
-                printk("Failed to lookup page directory address\n");
-                return;
-            }
-            pd = (uint64_t *)map_domain_page(mfn);
-            if ( unlikely(!pd) )
-            {
-                printk("Failed to map page directory\n");
-                goto out;
-            }
-            pde = pd;
-            for (pd_idx = 0; pd_idx < PAGE_SIZE/PDE_SIZE; pd_idx++)
-            {
-                uint64_t pt_ipa;
-                uint64_t *pt, *pte;
-                int size, pt_idx;
-
-                pt_ipa = get_pt(*pde++, &size);
-                if ( pt_ipa )
-                {
-                    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(pt_ipa)), NULL);
-                    printk("Page table IPA %lx MFN %lx size %d\n", pt_ipa, mfn, size);
-                    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
-                    {
-                        printk("Failed to lookup page table address\n");
-                        return;
-                    }
-                    pt = (uint64_t *)map_domain_page(mfn);
-                    if ( unlikely(!pt) )
-                    {
-                        printk("Failed to map page table\n");
-                        goto out;
-                    }
-                    pte = pt;
-                    for (pt_idx = 0; pt_idx < PAGE_SIZE/PTE_SIZE; pt_idx++)
-                    {
-                        uint64_t paddr = get_pte_addr(*pte++);
-                        if ( paddr )
-                            printk("paddr %lx\n", paddr);
-                    }
-                    unmap_domain_page(pt);
-                }
-            }
-            unmap_domain_page(pd);
-            break;
-        }
-    }
-out:
-    if (pc)
-        unmap_domain_page(pc);
-}
-
 static void gx6xxx_shared_page_print_irq(struct vcoproc_instance *vcoproc,
                                    struct vgx6xxx_info *vinfo)
 {
@@ -551,7 +301,7 @@ static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
     {
         if ( likely(!vinfo->scheduler_started) )
         {
-            gx6xxx_shared_page_find(vcoproc, vinfo);
+            gx6xxx_mmu_shared_page_find(vcoproc, vinfo);
             dev_dbg(vcoproc->coproc->dev, "Domain %d start condition met\n",
                     vcoproc->domain->domain_id);
             start = true;
@@ -755,7 +505,7 @@ static void gx6xxx_irq_handler(int irq, void *dev,
         if (once)
         {
             once = false;
-            gx6xxx_shared_page_find(info->curr, info->curr->priv);
+            gx6xxx_mmu_shared_page_find(info->curr, info->curr->priv);
         }
     }
 

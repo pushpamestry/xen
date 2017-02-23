@@ -20,6 +20,12 @@
 #ifndef __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COMMON_H__
 #define __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COMMON_H__
 
+struct vcoproc_instance;
+struct vgx6xxx_info;
+
+void gx6xxx_mmu_shared_page_find(struct vcoproc_instance *vcoproc,
+                                 struct vgx6xxx_info *vinfo);
+
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COMMON_H__ */
 
 /*
