@@ -1,5 +1,5 @@
 /*
- * xen/arch/arm/coproc/plat/gx6xxx.c
+ * xen/arch/arm/coproc/plat/gx6xxx/gx6xxx_coproc.c
  *
  * COPROC GPU GX6XXX platform specific code
  *
@@ -27,6 +27,7 @@
 
 #include "../../coproc.h"
 #include "../common.h"
+#include "gx6xxx_mmu.h"
 
 #define DT_MATCH_GX6XXX DT_MATCH_COMPATIBLE("renesas,gsx")
 
