@@ -25,8 +25,8 @@
 #include <xen/irq.h>
 #include <xen/vmap.h>
 
-#include "../coproc.h"
-#include "common.h"
+#include "../../coproc.h"
+#include "../common.h"
 
 #define DT_MATCH_GX6XXX DT_MATCH_COMPATIBLE("renesas,gsx")
 
