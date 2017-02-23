@@ -28,6 +28,8 @@
 #include "../../coproc.h"
 #include "../common.h"
 #include "gx6xxx_mmu.h"
+#include "config_kernel.h"
+#include "rgxdefs_km.h"
 
 #define DT_MATCH_GX6XXX DT_MATCH_COMPATIBLE("renesas,gsx")
 
@@ -149,82 +151,10 @@ static inline void gx6xxx_set_state(struct vcoproc_instance *vcoproc,
     vinfo->state = state;
 }
 
-#define RGX_CR_META_SP_MSLVIRQSTATUS                  (0x0AC8U)
-#define RGX_CR_META_SP_MSLVIRQSTATUS_MASKFULL         (IMG_UINT64_C(0x000000000000000C))
-#define RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT3_SHIFT  (3U)
-#define RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT3_CLRMSK (0XFFFFFFF7U)
-#define RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT3_EN     (0X00000008U)
-#define RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_SHIFT  (2U)
-#define RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_CLRMSK (0XFFFFFFFBU)
-#define RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_EN     (0X00000004U)
-
 #define RGXFW_CR_IRQ_STATUS                           RGX_CR_META_SP_MSLVIRQSTATUS
 #define RGXFW_CR_IRQ_STATUS_EVENT_EN                  RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_EN
 #define RGXFW_CR_IRQ_CLEAR                            RGX_CR_META_SP_MSLVIRQSTATUS
 #define RGXFW_CR_IRQ_CLEAR_MASK                       RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_CLRMSK
-
-#define RGX_CR_META_SP_MSLVDATAX                      (0x0A00U)
-#define RGX_CR_SOFT_RESET                             (0x0100U)
-#define RGX_CR_TIMER                                  (0x0160U)
-#define RGX_CR_META_SP_MSLVCTRL0                      (0x0A10U)
-#define RGX_CR_META_SP_MSLVCTRL1                      (0x0A18U)
-#define RGX_CR_MTS_GARTEN_WRAPPER_CONFIG              (0x0B50U)
-#define RGX_CR_META_BOOT                              (0x0BF8U)
-#define RGX_CR_BIF_CAT_BASE0                          (0x1200U)
-#define RGX_CR_SLC_CTRL_MISC                          (0x3800U)
-#define RGX_CR_AXI_ACE_LITE_CONFIGURATION             (0x38C0U)
-
-#define RGX_CR_MTS_SCHEDULE                           (0x0B00U)
-#define RGX_CR_MTS_SCHEDULE_TASK_COUNTED              (0X00000010U)
-
-#define RGX_CR_SIDEKICK_IDLE                (0x03C8U)
-#define RGX_CR_SIDEKICK_IDLE_MASKFULL       (0x000000000000007F)
-#define RGX_CR_SIDEKICK_IDLE_FB_CDC_EN      (0X00000040U)
-#define RGX_CR_SIDEKICK_IDLE_MMU_EN         (0X00000020U)
-#define RGX_CR_SIDEKICK_IDLE_BIF128_EN      (0X00000010U)
-#define RGX_CR_SIDEKICK_IDLE_TLA_EN         (0X00000008U)
-#define RGX_CR_SIDEKICK_IDLE_GARTEN_EN      (0X00000004U)
-#define RGX_CR_SIDEKICK_IDLE_HOSTIF_EN      (0X00000002U)
-#define RGX_CR_SIDEKICK_IDLE_SOCIF_EN       (0X00000001U)
-
-#define RGX_CR_SLC_IDLE                     (0x3898U)
-#define RGX_CR_SLC_IDLE_MASKFULL            (0x00000000000000FF)
-
-#define RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC                (0x0B40U)
-#define RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_MASKFULL       (0x000000000000FFFF)
-#define RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK (0XFFFF0000U)
-
-#define RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC                 (0x0B30U)
-#define RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_MASKFULL        (0x000000000000FFFF)
-#define RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK (0XFFFF0000U)
-
-#define RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC                (0x0B48U)
-#define RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_MASKFULL       (0x000000000000FFFF)
-#define RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK (0XFFFF0000U)
-
-#define RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC                 (0x0B38U)
-#define RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_MASKFULL        (0x000000000000FFFF)
-#define RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK (0XFFFF0000U)
-
-#define RGX_CR_BIF_STATUS_MMU                             (0x1358U)
-#define RGX_CR_BIF_STATUS_MMU_MASKFULL                    (0x00000000000000FF)
-#define RGX_CR_BIF_STATUS_MMU_REQUESTS_CLRMSK             (0XFFFFFF00U)
-
-#define RGX_CR_BIFPM_STATUS_MMU                           (0x1350U)
-#define RGX_CR_BIFPM_STATUS_MMU_MASKFULL                  (0x00000000000000FF)
-#define RGX_CR_BIFPM_STATUS_MMU_REQUESTS_CLRMSK           (0XFFFFFF00U)
-
-#define RGX_CR_BIFPM_READS_EXT_STATUS                     (0x1338U)
-#define RGX_CR_BIFPM_READS_EXT_STATUS_MASKFULL            (0x000000000000FFFF)
-#define RGX_CR_BIFPM_READS_EXT_STATUS_BANK0_CLRMSK        (0XFFFF0000U)
-
-#define RGX_CR_SLC_STATUS1                                (0x3870U)
-#define RGX_CR_SLC_STATUS1_MASKFULL                       (0x800003FF03FFFFFFUL)
-
-#define RGX_CR_META_SP_MSLVCTRL1_READY_EN                 (0X01000000U)
-#define RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN          (0X04000000U)
-
-#define RGX_CR_META_SP_MSLVDATAT                          (0x0A08U)
 
 #define REG_LO32(a) ( (a) )
 #define REG_HI32(a) ( (a) + sizeof(uint32_t) )
@@ -861,32 +791,8 @@ static const struct mmio_handler_ops gx6xxx_mmio_handler = {
     .write = gx6xxx_mmio_write,
 };
 
-#define RGX_CR_SOFT_RESET_MASKFULL          (0x00E7FFFFFFFFFC1D)
+
 #define RGX_CR_SOFT_RESET_ALL               (RGX_CR_SOFT_RESET_MASKFULL)
-
-#define RGX_CR_SOFT_RESET_DUST_A_CORE_EN    (0X0000000020000000)
-#define RGX_CR_SOFT_RESET_DUST_B_CORE_EN    (0X0000000040000000)
-#define RGX_CR_SOFT_RESET_DUST_C_CORE_EN    (0X0000000800000000)
-#define RGX_CR_SOFT_RESET_DUST_D_CORE_EN    (0X0000001000000000)
-#define RGX_CR_SOFT_RESET_DUST_E_CORE_EN    (0X0000002000000000)
-#define RGX_CR_SOFT_RESET_DUST_F_CORE_EN    (0X0000004000000000)
-#define RGX_CR_SOFT_RESET_DUST_G_CORE_EN    (0X0000008000000000)
-#define RGX_CR_SOFT_RESET_DUST_H_CORE_EN    (0X0000010000000000)
-
-#define RGX_CR_SOFT_RESET_DUST_n_CORE_EN    (RGX_CR_SOFT_RESET_DUST_A_CORE_EN | \
-                                             RGX_CR_SOFT_RESET_DUST_B_CORE_EN | \
-                                             RGX_CR_SOFT_RESET_DUST_C_CORE_EN | \
-                                             RGX_CR_SOFT_RESET_DUST_D_CORE_EN | \
-                                             RGX_CR_SOFT_RESET_DUST_E_CORE_EN | \
-                                             RGX_CR_SOFT_RESET_DUST_F_CORE_EN | \
-                                             RGX_CR_SOFT_RESET_DUST_G_CORE_EN | \
-                                             RGX_CR_SOFT_RESET_DUST_H_CORE_EN)
-
-#define RGX_CR_SOFT_RESET_RASCAL_CORE_EN    (0X0000000080000000)
-#define RGX_CR_SOFT_RESET_GARTEN_EN         (0X0000000100000000)
-
-#define RGX_CR_SOFT_RESET_RASCALDUSTS_EN    (RGX_CR_SOFT_RESET_RASCAL_CORE_EN | \
-                                             RGX_CR_SOFT_RESET_DUST_n_CORE_EN)
 
 static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
                                 struct vgx6xxx_info *vinfo)
