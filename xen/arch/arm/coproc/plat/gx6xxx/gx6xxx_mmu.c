@@ -93,7 +93,9 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     uint64_t *pg64;
     uint64_t ipa;
 
+#if 0
     printk("%s dev_vaddr %lx\n", __FUNCTION__, dev_vaddr);
+#endif
     /* get index in the page directory */
     idx = vaddr_to_pde_idx(dev_vaddr);
     BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PD_VALUE);
@@ -103,8 +105,8 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         printk("Failed to map page directory MFN %lx\n", vinfo->mfn_pd);
         return INVALID_MFN;
     }
-    printk("Page directory MFN %lx\n", vinfo->mfn_pd);
 #if 0
+    printk("Page directory MFN %lx\n", vinfo->mfn_pd);
     gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
 #endif
     /* read PT base address */
@@ -119,7 +121,9 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     /* FIXME: we only expect 4K pages for now */
     BUG_ON(order != 0);
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+#if 0
     printk("Page table IPA %lx MFN %lx\n", ipa, mfn);
+#endif
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         printk("Failed to lookup page table\n");
@@ -148,7 +152,9 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         return INVALID_MFN;
     }
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+#if 0
     printk("Page table entry IPA %lx MFN %lx\n", ipa, mfn);
+#endif
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         printk("Failed to lookup page table entry for %lx\n",
@@ -175,7 +181,9 @@ mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
     /* FIXME: only one page must be in PC which is page directory (PD) */
     ipa = vinfo->reg_val_cr_bif_cat_base0.val;
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+#if 0
     printk("Page catalog IPA %lx MFN %lx\n", ipa, mfn);
+#endif
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         printk("Failed to lookup page catalog\n");
@@ -205,7 +213,9 @@ mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
     }
     /* we have page catalog entry, so we can read page directory */
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+#if 0
     printk("Page directory IPA %lx MFN %lx\n", ipa, mfn);
+#endif
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         printk("Failed to lookup page directory\n");

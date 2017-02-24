@@ -10,10 +10,10 @@ static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
     int ret = -EFAULT;
     RGXFWIF_INIT *fw_init = gx6xxx_mmu_map(vinfo->mfn_rgx_fwif_init);
 
-    vinfo->mfn_kernel_ccb = INVALID_MFN;
-    vinfo->mfn_kernel_ccb_ctl = INVALID_MFN;
-    vinfo->mfn_firmware_ccb = INVALID_MFN;
-    vinfo->mfn_firmware_ccb_ctl = INVALID_MFN;
+    vinfo->maddr_kernel_ccb = INVALID_MFN;
+    vinfo->maddr_kernel_ccb_ctl = INVALID_MFN;
+    vinfo->maddr_firmware_ccb = INVALID_MFN;
+    vinfo->maddr_firmware_ccb_ctl = INVALID_MFN;
 
     if ( unlikely(!fw_init) )
     {
@@ -28,30 +28,30 @@ static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
     printk("psFirmwareCCBCtl %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr));
 
     /* kernel */
-    vinfo->mfn_kernel_ccb = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+    vinfo->maddr_kernel_ccb = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCB.ui32Addr));
-    if ( unlikely(vinfo->mfn_kernel_ccb == INVALID_MFN) )
+    if ( unlikely(vinfo->maddr_kernel_ccb == INVALID_MFN) )
         goto out;
-    printk("psKernelCCB MFN %lx\n", vinfo->mfn_kernel_ccb);
+    printk("psKernelCCB maddr %lx\n", vinfo->maddr_kernel_ccb);
 
-    vinfo->mfn_kernel_ccb_ctl = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+    vinfo->maddr_kernel_ccb_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCBCtl.ui32Addr));
-    if ( unlikely(vinfo->mfn_kernel_ccb_ctl == INVALID_MFN) )
+    if ( unlikely(vinfo->maddr_kernel_ccb_ctl == INVALID_MFN) )
         goto out;
-    printk("psKernelCCBCtl MFN %lx\n", vinfo->mfn_kernel_ccb);
+    printk("psKernelCCBCtl maddr %lx\n", vinfo->maddr_kernel_ccb_ctl);
 
     /* firmware */
-    vinfo->mfn_firmware_ccb = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+    vinfo->maddr_firmware_ccb = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCB.ui32Addr));
-    if ( unlikely(vinfo->mfn_firmware_ccb == INVALID_MFN) )
+    if ( unlikely(vinfo->maddr_firmware_ccb == INVALID_MFN) )
         goto out;
-    printk("psFirmwareCCB MFN %lx\n", vinfo->mfn_firmware_ccb);
+    printk("psFirmwareCCB maddr %lx\n", vinfo->maddr_firmware_ccb);
 
-    vinfo->mfn_firmware_ccb_ctl = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+    vinfo->maddr_firmware_ccb_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr));
-    if ( unlikely(vinfo->mfn_firmware_ccb_ctl == INVALID_MFN) )
+    if ( unlikely(vinfo->maddr_firmware_ccb_ctl == INVALID_MFN) )
         goto out;
-    printk("psFirmwareCCBCtl MFN %lx\n", vinfo->mfn_firmware_ccb);
+    printk("psFirmwareCCBCtl maddr %lx\n", vinfo->maddr_firmware_ccb_ctl);
 
     ret = 0;
 out:

@@ -111,13 +111,14 @@ struct vgx6xxx_info
     mfn_t mfn_rgx_fwif_init;
 
     /* psKernelCCB */
-    mfn_t mfn_kernel_ccb;
+    paddr_t maddr_kernel_ccb;
     /* psKernelCCBCtl */
-    mfn_t mfn_kernel_ccb_ctl;
+    paddr_t maddr_kernel_ccb_ctl;
     /* psFirmwareCCB */
-    mfn_t mfn_firmware_ccb;
+    paddr_t maddr_firmware_ccb;
     /* psFirmwareCCBCtl */
-    mfn_t mfn_firmware_ccb_ctl;
+    paddr_t maddr_firmware_ccb_ctl;
+
 
 };
 
