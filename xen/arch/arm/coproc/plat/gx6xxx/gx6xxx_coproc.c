@@ -75,13 +75,6 @@ static inline void gx6xxx_set_state(struct vcoproc_instance *vcoproc,
     vinfo->state = state;
 }
 
-#if 0
-#define RGXFW_CR_IRQ_STATUS          RGX_CR_META_SP_MSLVIRQSTATUS
-#define RGXFW_CR_IRQ_STATUS_EVENT_EN                  RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_EN
-#define RGXFW_CR_IRQ_CLEAR                            RGX_CR_META_SP_MSLVIRQSTATUS
-#define RGXFW_CR_IRQ_CLEAR_MASK                       RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_CLRMSK
-#endif
-
 #define REG_LO32(a) ( (a) )
 #define REG_HI32(a) ( (a) + sizeof(uint32_t) )
 
@@ -429,11 +422,10 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
         goto out;
     }
 #endif
-    /* FIXME: the very first read/write will change state to initializing */
-    /* allow writing cached IRQ status in any state */
     if (ctx.offset == RGXFW_CR_IRQ_STATUS) {
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
 
+        /* allow writing cached IRQ status in any state */
         vinfo->reg_val_irq_status.as.lo = r;
         goto out;
     }
@@ -481,11 +473,12 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     uint32_t irq_status;
     unsigned long flags;
 
+#if 0
     printk("> %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
+#endif
 
     spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
-
-#if 0
+#if 1
     irq_status = readl(info->reg_vaddr_irq_status);
 #else
     irq_status = gx6xxx_read32(coproc, RGXFW_CR_IRQ_STATUS);
@@ -495,7 +488,7 @@ static void gx6xxx_irq_handler(int irq, void *dev,
         struct vcoproc_instance *vcoproc = info->curr;
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
-#if 0
+#if 1
         writel(RGXFW_CR_IRQ_CLEAR_MASK, info->reg_vaddr_irq_clear);
 #else
         gx6xxx_write32(coproc, RGXFW_CR_IRQ_STATUS, RGXFW_CR_IRQ_CLEAR_MASK);
@@ -515,7 +508,9 @@ static void gx6xxx_irq_handler(int irq, void *dev,
                    vinfo->fw_trace_buf->aui32InterruptCount[0]);
     }
     spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
+#if 0
     printk("< %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
+#endif
     if ( info->curr->domain->domain_id )
         printk("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++ delivering to Dom %d\n",
                 info->curr->domain->domain_id);
@@ -526,8 +521,7 @@ static const struct mmio_handler_ops gx6xxx_mmio_handler = {
     .write = gx6xxx_mmio_write,
 };
 
-
-#define RGX_CR_SOFT_RESET_ALL               (RGX_CR_SOFT_RESET_MASKFULL)
+#define RGX_CR_SOFT_RESET_ALL   (RGX_CR_SOFT_RESET_MASKFULL)
 
 static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
                                 struct vgx6xxx_info *vinfo)
@@ -655,8 +649,8 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
             return -ETIMEDOUT;
     }
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_SIDEKICK_IDLE,
-                    RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),
-                    RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN));
+                            RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),
+                            RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN));
     if ( ret < 0 )
         return ret;
 
@@ -667,94 +661,77 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
         return ret;
 
     gx6xxx_write32(coproc, RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC,
-                  RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK
-                  & RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_MASKFULL);
+                   RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK
+                   & RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC_MASKFULL);
 
     gx6xxx_write32(coproc, RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC,
-                  RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK
-                  & RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_MASKFULL);
+                   RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_DM_ASSOC_CLRMSK
+                   & RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC_MASKFULL);
 
     gx6xxx_write32(coproc, RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC,
-                  RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK
-                  & RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_MASKFULL);
+                   RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK
+                   & RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC_MASKFULL);
 
     gx6xxx_write32(coproc, RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC,
-                  RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK
-                  & RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_MASKFULL);
+                   RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_DM_ASSOC_CLRMSK
+                   & RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC_MASKFULL);
 
-    /* Disabling threads is only required for pdumps to stop the fw gracefully */
-
-#define META_CR_CTRLREG_BASE(T)                 (0x04800000 + 0x1000*(T))
-
-#define META_CR_COREREG_ENABLE          (0x0000000)
-#define META_CR_TXENABLE_ENABLE_BIT     (0x00000001)   /* Set if running */
-#define META_CR_T0ENABLE_OFFSET         (META_CR_CTRLREG_BASE(0) + META_CR_COREREG_ENABLE)
-
-    /* Disable thread 0 */
+    /* disable thread 0 */
     ret = gx6xxx_write_via_slave_port32(coproc,
-                                      META_CR_T0ENABLE_OFFSET,
-                                      ~META_CR_TXENABLE_ENABLE_BIT);
+                                        META_CR_T0ENABLE_OFFSET,
+                                        ~META_CR_TXENABLE_ENABLE_BIT);
     if ( ret < 0 )
         return ret;
 
-#define META_CR_T1ENABLE_OFFSET         (META_CR_CTRLREG_BASE(1) + META_CR_COREREG_ENABLE)
-
-    /* Disable thread 1 */
+    /* disable thread 1 */
     ret = gx6xxx_write_via_slave_port32(coproc,
                                       META_CR_T1ENABLE_OFFSET,
                                       ~META_CR_TXENABLE_ENABLE_BIT);
     if ( ret < 0 )
         return ret;
 
-    /* Clear down any irq raised by META (done after disabling the FW
+    /* clear down any irq raised by META (done after disabling the FW
      * threads to avoid a race condition).
-     * This is only really needed for PDumps but we do it anyway driver-live.
      */
     gx6xxx_write32(coproc, RGX_CR_META_SP_MSLVIRQSTATUS, 0x0);
 
-    /* Wait for the Slave Port to finish all the transactions */
+    /* wait for the slave port to finish all the transactions */
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_META_SP_MSLVCTRL1,
-                          RGX_CR_META_SP_MSLVCTRL1_READY_EN | RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN,
-                          RGX_CR_META_SP_MSLVCTRL1_READY_EN | RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN);
+                            RGX_CR_META_SP_MSLVCTRL1_READY_EN | RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN,
+                            RGX_CR_META_SP_MSLVCTRL1_READY_EN | RGX_CR_META_SP_MSLVCTRL1_GBLPORT_IDLE_EN);
     if ( ret < 0 )
         return ret;
 
-    /* Extra Idle checks */
+    /* extra idle checks */
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_BIF_STATUS_MMU,
-                          0,
-                          RGX_CR_BIF_STATUS_MMU_MASKFULL);
+                            0, RGX_CR_BIF_STATUS_MMU_MASKFULL);
     if ( ret < 0 )
         return ret;
 
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_BIFPM_STATUS_MMU,
-                          0,
-                          RGX_CR_BIFPM_STATUS_MMU_MASKFULL);
+                            0, RGX_CR_BIFPM_STATUS_MMU_MASKFULL);
     if ( ret < 0 )
         return ret;
 
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_BIFPM_READS_EXT_STATUS,
-                          0,
-                          RGX_CR_BIFPM_READS_EXT_STATUS_MASKFULL);
+                            0, RGX_CR_BIFPM_READS_EXT_STATUS_MASKFULL);
     if ( ret < 0 )
         return ret;
 
     ret = gx6xxx_poll_reg64(coproc, RGX_CR_SLC_STATUS1,
-                          0,
-                          RGX_CR_SLC_STATUS1_MASKFULL);
+                            0, RGX_CR_SLC_STATUS1_MASKFULL);
     if ( ret < 0 )
         return ret;
 
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_SLC_IDLE,
-                          RGX_CR_SLC_IDLE_MASKFULL,
-                          RGX_CR_SLC_IDLE_MASKFULL);
-
+                            RGX_CR_SLC_IDLE_MASKFULL,
+                            RGX_CR_SLC_IDLE_MASKFULL);
     if ( ret < 0 )
         return ret;
 
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_SIDEKICK_IDLE,
-                          RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),
-                          RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN));
-
+                            RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),
+                            RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN));
     if ( ret < 0 )
         return ret;
 

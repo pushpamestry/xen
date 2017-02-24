@@ -60,8 +60,8 @@ struct vgx6xxx_info
     /* set if scheduler has been started for this vcoproc */
     bool scheduler_started;
 
-    /* number of IRQs received - used to match if IRQ expected
-     * at switch from time
+    /* number of IRQs received - used to check if IRQ expected
+     * at "switch from" time
      */
     atomic_t irq_count;
 
