@@ -23,8 +23,17 @@
 #include <xen/domain_page.h>
 #include <xen/err.h>
 
+#include "rgx_fwif_km.h"
+
 struct vcoproc_instance;
 struct vgx6xxx_info;
+
+#define RGXFW_SEGMMU_DATA_CACHE_MASK    (RGXFW_SEGMMU_DATA_BASE_ADDRESS |    \
+                                         RGXFW_SEGMMU_DATA_META_CACHED |     \
+                                         RGXFW_SEGMMU_DATA_META_UNCACHED |   \
+                                         RGXFW_SEGMMU_DATA_VIVT_SLC_CACHED | \
+                                         RGXFW_SEGMMU_DATA_VIVT_SLC_UNCACHED)
+
 
 /* must be called after page catalog is set up
  * return value:
@@ -33,6 +42,12 @@ struct vgx6xxx_info;
  */
 mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
                       struct vgx6xxx_info *vinfo);
+
+static inline uint64_t gx6xxx_mmu_meta_to_dev_vaddr(uint32_t meta_addr)
+{
+    return (meta_addr & ~RGXFW_SEGMMU_DATA_CACHE_MASK) +
+            RGX_FIRMWARE_HEAP_BASE;
+}
 
 static inline void *gx6xxx_mmu_map(mfn_t mfn)
 {

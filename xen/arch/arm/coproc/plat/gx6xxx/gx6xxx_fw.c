@@ -4,6 +4,61 @@
 #include "rgx_meta.h"
 #include "rgxmmudefs_km.h"
 
+static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
+                                struct vgx6xxx_info *vinfo)
+{
+    int ret = -EFAULT;
+    RGXFWIF_INIT *fw_init = gx6xxx_mmu_map(vinfo->mfn_rgx_fwif_init);
+
+    vinfo->mfn_kernel_ccb = INVALID_MFN;
+    vinfo->mfn_kernel_ccb_ctl = INVALID_MFN;
+    vinfo->mfn_firmware_ccb = INVALID_MFN;
+    vinfo->mfn_firmware_ccb_ctl = INVALID_MFN;
+
+    if ( unlikely(!fw_init) )
+    {
+        printk("Cannot map RGXFWIF_INIT\n");
+        return -EFAULT;
+    }
+    printk("RGXFWIF_INIT = %lu\n", sizeof(RGXFWIF_INIT));
+    printk("%s dumping RGXFWIF_INIT\n", __FUNCTION__);
+    printk("psKernelCCB %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCB.ui32Addr));
+    printk("psKernelCCBCtl %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCBCtl.ui32Addr));
+    printk("psFirmwareCCB %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCB.ui32Addr));
+    printk("psFirmwareCCBCtl %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr));
+
+    /* kernel */
+    vinfo->mfn_kernel_ccb = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCB.ui32Addr));
+    if ( unlikely(vinfo->mfn_kernel_ccb == INVALID_MFN) )
+        goto out;
+    printk("psKernelCCB MFN %lx\n", vinfo->mfn_kernel_ccb);
+
+    vinfo->mfn_kernel_ccb_ctl = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCBCtl.ui32Addr));
+    if ( unlikely(vinfo->mfn_kernel_ccb_ctl == INVALID_MFN) )
+        goto out;
+    printk("psKernelCCBCtl MFN %lx\n", vinfo->mfn_kernel_ccb);
+
+    /* firmware */
+    vinfo->mfn_firmware_ccb = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCB.ui32Addr));
+    if ( unlikely(vinfo->mfn_firmware_ccb == INVALID_MFN) )
+        goto out;
+    printk("psFirmwareCCB MFN %lx\n", vinfo->mfn_firmware_ccb);
+
+    vinfo->mfn_firmware_ccb_ctl = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr));
+    if ( unlikely(vinfo->mfn_firmware_ccb_ctl == INVALID_MFN) )
+        goto out;
+    printk("psFirmwareCCBCtl MFN %lx\n", vinfo->mfn_firmware_ccb);
+
+    ret = 0;
+out:
+    gx6xxx_mmu_unmap(fw_init);
+    return ret;
+}
+
 int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
                    struct vgx6xxx_info *vinfo, mfn_t mfn_heap_base)
 {
@@ -27,12 +82,8 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
      * to the RGXFWIF_INIT structure
      * TODO: check for wrong configuration - do not read after the page end
      */
-    fw_init_dev_addr = *((uint32_t *)fw_cfg);
     /* convert the address from META address space into what MMU sees */
-    fw_init_dev_addr -= RGXFW_SEGMMU_DATA_BASE_ADDRESS;
-    fw_init_dev_addr -= RGXFW_SEGMMU_DATA_VIVT_SLC_UNCACHED;
-    fw_init_dev_addr += RGX_FIRMWARE_HEAP_BASE;
-    /* we are all set */
+    fw_init_dev_addr = gx6xxx_mmu_meta_to_dev_vaddr(*((uint32_t *)fw_cfg));
     gx6xxx_mmu_unmap(ptr);
     printk("Found RGXFWIF_INIT structure address: %lx\n", fw_init_dev_addr);
     /* now get its MFN */
@@ -40,6 +91,5 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
                                                          fw_init_dev_addr);
     if ( unlikely(vinfo->mfn_rgx_fwif_init == INVALID_MFN) )
         return -EFAULT;
-    //gx6xxx_dump(uint32_t *vaddr, int size);
-    return 0;
+    return gx6xxx_fw_parse_init(vcoproc, vinfo);
 }

@@ -109,6 +109,16 @@ struct vgx6xxx_info
     mfn_t mfn_pd;
     /* RGXFWIF_INIT structure */
     mfn_t mfn_rgx_fwif_init;
+
+    /* psKernelCCB */
+    mfn_t mfn_kernel_ccb;
+    /* psKernelCCBCtl */
+    mfn_t mfn_kernel_ccb_ctl;
+    /* psFirmwareCCB */
+    mfn_t mfn_firmware_ccb;
+    /* psFirmwareCCBCtl */
+    mfn_t mfn_firmware_ccb_ctl;
+
 };
 
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__ */

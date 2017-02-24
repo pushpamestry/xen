@@ -104,7 +104,9 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         return INVALID_MFN;
     }
     printk("Page directory MFN %lx\n", vinfo->mfn_pd);
+#if 0
     gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
+#endif
     /* read PT base address */
     ipa = get_pt_addr_and_order(pg64[idx], &order);
     unmap_domain_page(pg64);
@@ -132,7 +134,9 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         printk("Failed to map page table MFN %lx\n", mfn);
         return INVALID_MFN;
     }
+#if 0
     gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
+#endif
     /* read PT base address */
     ipa = get_pte_addr(pg64[idx]);
     unmap_domain_page(pg64);
@@ -186,7 +190,9 @@ mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
         printk("Failed to map page catalog MFN %lx\n", mfn);
         return INVALID_MFN;
     }
+#if 0
     gx6xxx_dump(pgc, PAGE_SIZE);
+#endif
     /* read PD base address */
     ipa = get_pd_addr(pgc[idx]);
     unmap_domain_page(pgc);
