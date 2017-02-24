@@ -32,8 +32,9 @@
 
 #define DT_MATCH_GX6XXX DT_MATCH_COMPATIBLE("renesas,gsx")
 
-#define GX6XXX_NUM_IRQ  1
-#define GX6XXX_NUM_MMIO 1
+#define GX6XXX_NUM_IRQ          1
+#define GX6XXX_NUM_MMIO         1
+#define GX6XXX_IRQ_POLL_TO_US   500
 
 #if 1
 #define GX6XXX_DEBUG 1
@@ -639,14 +640,14 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
            vinfo->fw_trace_buf->aui32InterruptCount[0],
            atomic_read(&vinfo->irq_count));
 
-    /* FIXME: need timeouts in ms */
-    retry = 1000;
-    while ( atomic_read(&vinfo->irq_count) != vinfo->fw_trace_buf->aui32InterruptCount[0] )
+    retry = GX6XXX_IRQ_POLL_TO_US;
+    while ( atomic_read(&vinfo->irq_count) !=
+            vinfo->fw_trace_buf->aui32InterruptCount[0] )
     {
         cpu_relax();
-        retry--;
-        if (!retry)
+        if (!retry--)
             return -ETIMEDOUT;
+        udelay(1);
     }
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_SIDEKICK_IDLE,
                             RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),
