@@ -17,10 +17,10 @@
  * GNU General Public License for more details.
  */
 
-#include <xen/domain_page.h>
-
 #include "gx6xxx_coproc.h"
+#include "gx6xxx_hexdump.h"
 #include "gx6xxx_mmu.h"
+#include "rgx_meta.h"
 #include "rgxmmudefs_km.h"
 
 /* Setup of Px Entries:
@@ -45,131 +45,223 @@
  *
  */
 
-/* FIXME: PCE is 4 bytes */
-#define PCE_SIZE    sizeof(uint32_t)
-/* FIXME: PDE is 8 bytes */
-#define PDE_SIZE    sizeof(uint64_t)
-/* FIXME: PTE is 8 bytes */
-#define PTE_SIZE    sizeof(uint64_t)
-
-static inline uint32_t get_pgd(uint32_t pce)
+static inline uint64_t get_pd_addr(uint32_t pce)
 {
-    if ( likely(!(pce & RGX_MMUCTRL_PC_DATA_VALID_EN)) )
+    if ( unlikely(!(pce & RGX_MMUCTRL_PC_DATA_VALID_EN)) )
         return 0;
     return (pce >> RGX_MMUCTRL_PC_DATA_PD_BASE_SHIFT) << PAGE_SHIFT;
 }
 
-static inline uint64_t get_pgt(uint64_t pde)
+static inline uint64_t get_pt_addr_and_order(uint64_t pde, int *order)
 {
-    if ( likely(!(pde & RGX_MMUCTRL_PD_DATA_VALID_EN)) )
+    if ( unlikely(!(pde & RGX_MMUCTRL_PD_DATA_VALID_EN)) )
         return 0;
+    *order = (pde & ~RGX_MMUCTRL_PD_DATA_PAGE_SIZE_CLRMSK) >> RGX_MMUCTRL_PD_DATA_PAGE_SIZE_SHIFT;
     return pde & ~RGX_MMUCTRL_PD_DATA_PT_BASE_CLRMSK;
-}
-
-static inline int get_pgt_size(uint64_t pde)
-{
-    if ( likely(!(pde & RGX_MMUCTRL_PD_DATA_VALID_EN)) )
-        return 0;
-    return (pde & ~RGX_MMUCTRL_PD_DATA_PAGE_SIZE_CLRMSK) >> RGX_MMUCTRL_PD_DATA_PAGE_SIZE_SHIFT;
 }
 
 static inline uint64_t get_pte_addr(uint64_t pte)
 {
-    if ( likely(!(pte & RGX_MMUCTRL_PT_DATA_VALID_EN)) )
+    if ( unlikely(!(pte & RGX_MMUCTRL_PT_DATA_VALID_EN)) )
         return 0;
     return pte & ~RGX_MMUCTRL_PT_DATA_PAGE_CLRMSK;
 }
 
-void gx6xxx_mmu_shared_page_find(struct vcoproc_instance *vcoproc,
-                                 struct vgx6xxx_info *vinfo)
+/* get index in the PC for the device virtual address */
+static inline int vaddr_to_pce_idx(uint64_t vaddr)
 {
-    int pc_idx;
-    uint32_t *pc, *pce;
-    uint64_t ipa;
+    return (vaddr & ~RGX_MMUCTRL_VADDR_PC_INDEX_CLRMSK) >> RGX_MMUCTRL_VADDR_PC_INDEX_SHIFT;
+}
+
+/* get index in the PD for the device virtual address */
+static inline int vaddr_to_pde_idx(uint64_t vaddr)
+{
+    return (vaddr & ~RGX_MMUCTRL_VADDR_PD_INDEX_CLRMSK) >> RGX_MMUCTRL_VADDR_PD_INDEX_SHIFT;
+}
+
+/* get index in the PT for the device virtual address */
+static inline int vaddr_to_pte_idx(uint64_t vaddr)
+{
+    return (vaddr & ~RGX_MMUCTRL_VADDR_PT_INDEX_CLRMSK) >> RGX_MMUCTRL_VADDR_PT_INDEX_SHIFT;
+}
+
+mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
+                                struct vgx6xxx_info *vinfo, uint64_t dev_vaddr)
+{
+    int idx, order;
     mfn_t mfn;
+    uint64_t *pg64;
+    uint64_t ipa;
+
+    /* get index in the page directory */
+    idx = vaddr_to_pde_idx(dev_vaddr);
+    BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PD_VALUE);
+    pg64 = (uint64_t *)map_domain_page(vinfo->mfn_pd);
+    if ( unlikely(!pg64) )
+    {
+        printk("Failed to map page directory MFN %lx\n", vinfo->mfn_pd);
+        return INVALID_MFN;
+    }
+    /* read PT base address */
+    ipa = get_pt_addr_and_order(pg64[idx], &order);
+    unmap_domain_page(pg64);
+
+    if ( unlikely(!ipa) )
+    {
+        printk("No valid IPA for page table\n");
+        return INVALID_MFN;
+    }
+    /* FIXME: we only expect 4K pages for now */
+    BUG_ON(order != 0);
+    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+    printk("Page table IPA %lx MFN %lx\n", ipa, mfn);
+    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
+    {
+        printk("Failed to lookup page table\n");
+        return INVALID_MFN;
+    }
+
+    /* get index in the page table */
+    idx = vaddr_to_pte_idx(dev_vaddr);
+    BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PT_VALUE);
+    pg64 = (uint64_t *)map_domain_page(mfn);
+    if ( unlikely(!pg64) )
+    {
+        printk("Failed to map page table MFN %lx\n", mfn);
+        return INVALID_MFN;
+    }
+    /* read PT base address */
+    ipa = get_pte_addr(pg64[idx]);
+    unmap_domain_page(pg64);
+
+    if ( unlikely(!ipa) )
+    {
+        printk("No valid IPA for page table entry for vaddr %lx\n",
+               dev_vaddr);
+        return INVALID_MFN;
+    }
+    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+    printk("Page table entry IPA %lx MFN %lx\n", ipa, mfn);
+    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
+    {
+        printk("Failed to lookup page table entry for %lx\n",
+                dev_vaddr);
+        return INVALID_MFN;
+    }
+    return mfn;
+}
+
+mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
+                    struct vgx6xxx_info *vinfo)
+{
+    uint64_t ipa;
+    uint32_t *pgc;
+    uint64_t *pg64;
+    int idx, order;
+    mfn_t mfn;
+
+    vinfo->mfn_pc = INVALID_MFN;
+    vinfo->mfn_pd = INVALID_MFN;
+    vinfo->mfn_rgx_fwif_init = INVALID_MFN;
 
     /* FIXME: reg_val_cr_bif_cat_base0 has a physical address of the page
      * catalog (PC) which is one page */
     /* FIXME: only one page must be in PC which is page directory (PD) */
-
     ipa = vinfo->reg_val_cr_bif_cat_base0.val;
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
     printk("Page catalog IPA %lx MFN %lx\n", ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
-        printk("Failed to lookup BIF catalog base address\n");
-        return;
+        printk("Failed to lookup page catalog\n");
+        return INVALID_MFN;
     }
-    pc = (uint32_t *)map_domain_page(mfn);
-    if ( unlikely(!pc) )
+    /* get index in the page catalog */
+    idx = vaddr_to_pce_idx(RGX_FIRMWARE_HEAP_BASE);
+    BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PC_VALUE);
+    pgc = (uint32_t *)map_domain_page(mfn);
+    if ( unlikely(!pgc) )
     {
-        printk("Failed to map page catalog\n");
-        goto out;
+        printk("Failed to map page catalog MFN %lx\n", mfn);
+        return INVALID_MFN;
     }
-    pce = pc;
-    for (pc_idx = 0; pc_idx < PAGE_SIZE/PCE_SIZE; pc_idx++)
+    /* read PD base address */
+    ipa = get_pd_addr(pgc[idx]);
+    unmap_domain_page(pgc);
+    vinfo->mfn_pc = mfn;
+
+    if ( unlikely(!ipa) )
     {
-        uint32_t pd_ipa;
-
-        pd_ipa = get_pgd(*pce++);
-        if ( pd_ipa )
-        {
-            uint64_t *pd, *pde;
-            int pd_idx;
-
-            mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(pd_ipa)), NULL);
-            printk("Page directory IPA %x MFN %lx\n", pd_ipa, mfn);
-            if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
-            {
-                printk("Failed to lookup page directory address\n");
-                return;
-            }
-            pd = (uint64_t *)map_domain_page(mfn);
-            if ( unlikely(!pd) )
-            {
-                printk("Failed to map page directory\n");
-                goto out;
-            }
-            pde = pd;
-            for (pd_idx = 0; pd_idx < PAGE_SIZE/PDE_SIZE; pd_idx++)
-            {
-                uint64_t pt_ipa;
-                uint64_t *pt, *pte;
-                int pt_idx;
-
-                pt_ipa = get_pgt(*pde++);
-                if ( pt_ipa )
-                {
-                    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(pt_ipa)), NULL);
-                    printk("Page table IPA %lx MFN %lx\n", pt_ipa, mfn);
-                    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
-                    {
-                        printk("Failed to lookup page table address\n");
-                        return;
-                    }
-                    pt = (uint64_t *)map_domain_page(mfn);
-                    if ( unlikely(!pt) )
-                    {
-                        printk("Failed to map page table\n");
-                        goto out;
-                    }
-                    pte = pt;
-                    for (pt_idx = 0; pt_idx < PAGE_SIZE/PTE_SIZE; pt_idx++)
-                    {
-                        uint64_t paddr = get_pte_addr(*pte++);
-                        if ( paddr )
-                            printk("paddr %lx\n", paddr);
-                    }
-                    unmap_domain_page(pt);
-                }
-            }
-            unmap_domain_page(pd);
-            break;
-        }
+        printk("No valid IPA for page directory\n");
+        return INVALID_MFN;
     }
-out:
-    if (pc)
-        unmap_domain_page(pc);
+    /* we have page catalog entry, so we can read page directory */
+    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+    printk("Page directory IPA %lx MFN %lx\n", ipa, mfn);
+    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
+    {
+        printk("Failed to lookup page directory\n");
+        return INVALID_MFN;
+    }
+
+    /* get index in the page directory */
+    idx = vaddr_to_pde_idx(RGX_FIRMWARE_HEAP_BASE);
+    BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PD_VALUE);
+    pg64 = (uint64_t *)map_domain_page(mfn);
+    if ( unlikely(!pg64) )
+    {
+        printk("Failed to map page directory MFN %lx\n", mfn);
+        return INVALID_MFN;
+    }
+    /* read PT base address */
+    ipa = get_pt_addr_and_order(pg64[idx], &order);
+    unmap_domain_page(pg64);
+    vinfo->mfn_pd = mfn;
+
+    if ( unlikely(!ipa) )
+    {
+        printk("No valid IPA for page table\n");
+        return INVALID_MFN;
+    }
+    /* FIXME: we only expect 4K pages for now */
+    BUG_ON(order != 0);
+    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+    printk("Page table IPA %lx MFN %lx\n", ipa, mfn);
+    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
+    {
+        printk("Failed to lookup page table\n");
+        return INVALID_MFN;
+    }
+
+    /* get index in the page table */
+    idx = vaddr_to_pte_idx(RGX_FIRMWARE_HEAP_BASE);
+    BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PT_VALUE);
+    pg64 = (uint64_t *)map_domain_page(mfn);
+    if ( unlikely(!pg64) )
+    {
+        printk("Failed to map page table MFN %lx\n", mfn);
+        return INVALID_MFN;
+    }
+    /* read PT base address */
+    ipa = get_pte_addr(pg64[idx]);
+    gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
+
+    unmap_domain_page(pg64);
+
+    if ( unlikely(!ipa) )
+    {
+        printk("No valid IPA for page table entry for vaddr %llx\n",
+               RGX_FIRMWARE_HEAP_BASE);
+        return INVALID_MFN;
+    }
+    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
+    printk("Page table entry IPA %lx MFN %lx\n", ipa, mfn);
+    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
+    {
+        printk("Failed to lookup page table entry for %llx\n",
+                RGX_FIRMWARE_HEAP_BASE);
+        return INVALID_MFN;
+    }
+    return mfn;
 }
 
 /*

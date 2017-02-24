@@ -1,7 +1,7 @@
 /*
- * xen/arch/arm/coproc/plat/gx6xxx/gx6xxx_hexdump.h
+ * xen/arch/arm/coproc/plat/gx6xxx/gx6xxx_fw.h
  *
- * Gx6XXX hex dump
+ * Gx6XXX firmware utilities
  *
  * Oleksandr Andrushchenko <oleksandr_andrushchenko@epam.com>
  * Copyright (C) 2017 EPAM Systems Inc.
@@ -17,14 +17,18 @@
  * GNU General Public License for more details.
  */
 
-#ifndef __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_HEXDUMP_H__
-#define __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_HEXDUMP_H__
+#ifndef __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_FW_H__
+#define __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_FW_H__
 
-#include <xen/types.h>
+#include <xen/mm.h>
 
-void gx6xxx_dump(uint32_t *vaddr, int size);
+struct vcoproc_instance;
+struct vgx6xxx_info;
 
-#endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_HEXDUMP_H__ */
+int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
+                   struct vgx6xxx_info *vinfo, mfn_t mfn_heap_base);
+
+#endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_FW_H__ */
 
 /*
  * Local variables:

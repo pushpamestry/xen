@@ -26,8 +26,10 @@
 #include <xen/vmap.h>
 
 #include "gx6xxx_coproc.h"
+#include "gx6xxx_fw.h"
+#include "gx6xxx_hexdump.h"
 #include "gx6xxx_mmu.h"
-#include "rgxdefs_km.h"
+#include "rgx_meta.h"
 
 #define DT_MATCH_GX6XXX DT_MATCH_COMPATIBLE("renesas,gsx")
 
@@ -74,10 +76,12 @@ static inline void gx6xxx_set_state(struct vcoproc_instance *vcoproc,
     vinfo->state = state;
 }
 
-#define RGXFW_CR_IRQ_STATUS                           RGX_CR_META_SP_MSLVIRQSTATUS
+#if 0
+#define RGXFW_CR_IRQ_STATUS          RGX_CR_META_SP_MSLVIRQSTATUS
 #define RGXFW_CR_IRQ_STATUS_EVENT_EN                  RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_EN
 #define RGXFW_CR_IRQ_CLEAR                            RGX_CR_META_SP_MSLVIRQSTATUS
 #define RGXFW_CR_IRQ_CLEAR_MASK                       RGX_CR_META_SP_MSLVIRQSTATUS_TRIGVECT2_CLRMSK
+#endif
 
 #define REG_LO32(a) ( (a) )
 #define REG_HI32(a) ( (a) + sizeof(uint32_t) )
@@ -256,41 +260,6 @@ static inline void gx6xxx_write64(struct coproc_device *coproc,
     writeq(val, (char *)coproc->mmios[0].base + offset);
 }
 
-static void gx6xxx_shared_page_print_irq(struct vcoproc_instance *vcoproc,
-                                   struct vgx6xxx_info *vinfo)
-{
-    mfn_t mfn;
-    uint32_t *vaddr = NULL;
-    uint64_t ipa;
-
-    return;
-    ipa = vinfo->reg_val_cr_bif_cat_base0.val;
-    printk("Map IPA %lx\n", ipa);
-    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-    printk("MFN is %lx\n", mfn);
-    if ( mfn_eq(mfn, INVALID_MFN) )
-    {
-        printk("Failed to lookup BIF catalog base address\n");
-        return;
-    }
-
-    flush_page_to_ram(mfn);
-    vaddr = (uint32_t *)map_domain_page(mfn);
-    {
-        int i, j;
-        uint32_t *ptr = (uint32_t *)vaddr;
-
-        for (i = 0; i < 4096 / sizeof(uint32_t) / 4; i++)
-        {
-            for (j = 0; j < 4; j++)
-                printk(" %08x", *ptr++);
-            printk("\n");
-        }
-    }
-
-    if (vaddr)
-        unmap_domain_page(vaddr);
-}
 static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
                                          struct vgx6xxx_info *vinfo)
 {
@@ -301,7 +270,24 @@ static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
     {
         if ( likely(!vinfo->scheduler_started) )
         {
-            gx6xxx_mmu_shared_page_find(vcoproc, vinfo);
+            mfn_t mfn_heap_base;
+            int ret;
+
+            /* RGX_CR_BIF_CAT_BASE0 must be set by this time */
+            mfn_heap_base = gx6xxx_mmu_init(vcoproc, vinfo);
+            if ( mfn_heap_base == INVALID_MFN )
+            {
+                dev_err(vcoproc->coproc->dev, "Failed to initialize GPU MMU for domain %d\n",
+                        vcoproc->domain->domain_id);
+                BUG();
+            }
+            ret = gx6xxx_fw_init(vcoproc, vinfo, mfn_heap_base);
+            if ( ret < 0 )
+            {
+                dev_err(vcoproc->coproc->dev, "Failed to initialize GPU FW for domain %d\n",
+                        vcoproc->domain->domain_id);
+                BUG();
+            }
             dev_dbg(vcoproc->coproc->dev, "Domain %d start condition met\n",
                     vcoproc->domain->domain_id);
             start = true;
@@ -497,17 +483,6 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     unsigned long flags;
 
     printk("> %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
-
-    gx6xxx_shared_page_print_irq(info->curr, info->curr->priv);
-    {
-        static bool once = true;
-
-        if (once)
-        {
-            once = false;
-            gx6xxx_mmu_shared_page_find(info->curr, info->curr->priv);
-        }
-    }
 
     spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
 #if 0

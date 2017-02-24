@@ -1,4 +1,5 @@
 #include "gx6xxx_coproc.h"
+#include "gx6xxx_hexdump.h"
 
 void gx6xxx_dump(uint32_t *vaddr, int size)
 {
