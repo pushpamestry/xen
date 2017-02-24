@@ -118,8 +118,8 @@ struct vgx6xxx_info
     paddr_t maddr_firmware_ccb;
     /* psFirmwareCCBCtl */
     paddr_t maddr_firmware_ccb_ctl;
-
-
+    /* sTraceBufCtl */
+    paddr_t maddr_trace_buf_ctl;
 };
 
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__ */

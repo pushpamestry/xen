@@ -69,6 +69,8 @@ static inline void gx6xxx_mmu_unmap(void *vaddr)
 mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
                                 struct vgx6xxx_info *vinfo, uint64_t dev_vaddr);
 
+#define GX6XXX_MMU_PAGE_OFFSET( a ) (a & ~PAGE_MASK)
+
 static inline paddr_t gx6xxx_mmu_devaddr_to_maddr(struct vcoproc_instance *vcoproc,
                                                   struct vgx6xxx_info *vinfo,
                                                   uint64_t dev_vaddr)
@@ -78,7 +80,7 @@ static inline paddr_t gx6xxx_mmu_devaddr_to_maddr(struct vcoproc_instance *vcopr
     mfn = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo, dev_vaddr);
     if ( unlikely(mfn == INVALID_MFN) )
         return 0;
-    return pfn_to_paddr(mfn) + (dev_vaddr & ~PAGE_MASK);
+    return pfn_to_paddr(mfn) + GX6XXX_MMU_PAGE_OFFSET(dev_vaddr);
 }
 
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COMMON_H__ */

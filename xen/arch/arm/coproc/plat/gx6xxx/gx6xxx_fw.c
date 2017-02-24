@@ -1,6 +1,7 @@
 #include "gx6xxx_coproc.h"
 #include "gx6xxx_fw.h"
 #include "gx6xxx_mmu.h"
+#include "rgx_fwif.h"
 #include "rgx_meta.h"
 #include "rgxmmudefs_km.h"
 
@@ -14,44 +15,39 @@ static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
     vinfo->maddr_kernel_ccb_ctl = INVALID_MFN;
     vinfo->maddr_firmware_ccb = INVALID_MFN;
     vinfo->maddr_firmware_ccb_ctl = INVALID_MFN;
+    vinfo->maddr_trace_buf_ctl = INVALID_MFN;
 
     if ( unlikely(!fw_init) )
     {
         printk("Cannot map RGXFWIF_INIT\n");
         return -EFAULT;
     }
-    printk("RGXFWIF_INIT = %lu\n", sizeof(RGXFWIF_INIT));
-    printk("%s dumping RGXFWIF_INIT\n", __FUNCTION__);
-    printk("psKernelCCB %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCB.ui32Addr));
-    printk("psKernelCCBCtl %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCBCtl.ui32Addr));
-    printk("psFirmwareCCB %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCB.ui32Addr));
-    printk("psFirmwareCCBCtl %lx\n", gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr));
-
     /* kernel */
     vinfo->maddr_kernel_ccb = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCB.ui32Addr));
     if ( unlikely(vinfo->maddr_kernel_ccb == INVALID_MFN) )
         goto out;
-    printk("psKernelCCB maddr %lx\n", vinfo->maddr_kernel_ccb);
 
     vinfo->maddr_kernel_ccb_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCBCtl.ui32Addr));
     if ( unlikely(vinfo->maddr_kernel_ccb_ctl == INVALID_MFN) )
         goto out;
-    printk("psKernelCCBCtl maddr %lx\n", vinfo->maddr_kernel_ccb_ctl);
 
     /* firmware */
     vinfo->maddr_firmware_ccb = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCB.ui32Addr));
     if ( unlikely(vinfo->maddr_firmware_ccb == INVALID_MFN) )
         goto out;
-    printk("psFirmwareCCB maddr %lx\n", vinfo->maddr_firmware_ccb);
 
     vinfo->maddr_firmware_ccb_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr));
     if ( unlikely(vinfo->maddr_firmware_ccb_ctl == INVALID_MFN) )
         goto out;
-    printk("psFirmwareCCBCtl maddr %lx\n", vinfo->maddr_firmware_ccb_ctl);
+
+    vinfo->maddr_trace_buf_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
+                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->sTraceBufCtl.ui32Addr));
+    if ( unlikely(vinfo->maddr_trace_buf_ctl == INVALID_MFN) )
+        goto out;
 
     ret = 0;
 out:
@@ -93,3 +89,22 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
         return -EFAULT;
     return gx6xxx_fw_parse_init(vcoproc, vinfo);
 }
+
+uint32_t gx6xxx_fw_get_irq_count(struct vcoproc_instance *vcoproc,
+                                 struct vgx6xxx_info *vinfo)
+{
+    unsigned char *ptr;
+    RGXFWIF_TRACEBUF *fw_trace_buf;
+    uint32_t irq_num;
+
+    if ( unlikely(!vinfo->maddr_trace_buf_ctl) )
+        return 0;
+    ptr = gx6xxx_mmu_map(paddr_to_pfn(vinfo->maddr_trace_buf_ctl));
+    if ( unlikely(!ptr) )
+        return 0;
+    fw_trace_buf = (RGXFWIF_TRACEBUF *)(ptr + GX6XXX_MMU_PAGE_OFFSET(vinfo->maddr_trace_buf_ctl));
+    irq_num = fw_trace_buf->aui32InterruptCount[0];
+    gx6xxx_mmu_unmap(ptr);
+    return irq_num;
+}
+

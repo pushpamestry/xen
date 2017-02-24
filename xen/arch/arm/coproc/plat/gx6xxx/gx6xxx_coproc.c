@@ -485,6 +485,7 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     printk("> %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
 
     spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
+
 #if 0
     irq_status = readl(info->reg_vaddr_irq_status);
 #else
@@ -494,6 +495,8 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     {
         struct vcoproc_instance *vcoproc = info->curr;
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+
+        printk("FW reports IRQ count %d\n", gx6xxx_fw_get_irq_count(vcoproc, vinfo));
 
 #if 0
         writel(RGXFW_CR_IRQ_CLEAR_MASK, info->reg_vaddr_irq_clear);
