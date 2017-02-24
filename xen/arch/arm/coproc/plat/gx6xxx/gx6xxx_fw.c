@@ -10,6 +10,7 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
     uint64_t fw_init_dev_addr;
     uint64_t *fw_cfg, *ptr = gx6xxx_mmu_map(mfn_heap_base);
 
+    vinfo->mfn_rgx_fwif_init = INVALID_MFN;
     if ( unlikely(!ptr) )
         return -EFAULT;
     /* skip RGXFW_BOOTLDR_CONF_OFFSET uint32_t values to get
@@ -33,7 +34,12 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
     fw_init_dev_addr += RGX_FIRMWARE_HEAP_BASE;
     /* we are all set */
     gx6xxx_mmu_unmap(ptr);
-    printk("Found RGXFWIF_INIT structure at %lx\n", fw_init_dev_addr);
+    printk("Found RGXFWIF_INIT structure address: %lx\n", fw_init_dev_addr);
     /* now get its MFN */
+    vinfo->mfn_rgx_fwif_init = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
+                                                         fw_init_dev_addr);
+    if ( unlikely(vinfo->mfn_rgx_fwif_init == INVALID_MFN) )
+        return -EFAULT;
+    //gx6xxx_dump(uint32_t *vaddr, int size);
     return 0;
 }

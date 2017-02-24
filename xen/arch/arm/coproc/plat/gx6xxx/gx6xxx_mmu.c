@@ -93,6 +93,7 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     uint64_t *pg64;
     uint64_t ipa;
 
+    printk("%s dev_vaddr %lx\n", __FUNCTION__, dev_vaddr);
     /* get index in the page directory */
     idx = vaddr_to_pde_idx(dev_vaddr);
     BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PD_VALUE);
@@ -102,6 +103,8 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         printk("Failed to map page directory MFN %lx\n", vinfo->mfn_pd);
         return INVALID_MFN;
     }
+    printk("Page directory MFN %lx\n", vinfo->mfn_pd);
+    gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
     /* read PT base address */
     ipa = get_pt_addr_and_order(pg64[idx], &order);
     unmap_domain_page(pg64);
@@ -120,7 +123,6 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         printk("Failed to lookup page table\n");
         return INVALID_MFN;
     }
-
     /* get index in the page table */
     idx = vaddr_to_pte_idx(dev_vaddr);
     BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PT_VALUE);
@@ -130,6 +132,7 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         printk("Failed to map page table MFN %lx\n", mfn);
         return INVALID_MFN;
     }
+    gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
     /* read PT base address */
     ipa = get_pte_addr(pg64[idx]);
     unmap_domain_page(pg64);
@@ -156,8 +159,7 @@ mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
 {
     uint64_t ipa;
     uint32_t *pgc;
-    uint64_t *pg64;
-    int idx, order;
+    int idx;
     mfn_t mfn;
 
     vinfo->mfn_pc = INVALID_MFN;
@@ -184,6 +186,7 @@ mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
         printk("Failed to map page catalog MFN %lx\n", mfn);
         return INVALID_MFN;
     }
+    gx6xxx_dump(pgc, PAGE_SIZE);
     /* read PD base address */
     ipa = get_pd_addr(pgc[idx]);
     unmap_domain_page(pgc);
@@ -202,66 +205,8 @@ mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
         printk("Failed to lookup page directory\n");
         return INVALID_MFN;
     }
-
-    /* get index in the page directory */
-    idx = vaddr_to_pde_idx(RGX_FIRMWARE_HEAP_BASE);
-    BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PD_VALUE);
-    pg64 = (uint64_t *)map_domain_page(mfn);
-    if ( unlikely(!pg64) )
-    {
-        printk("Failed to map page directory MFN %lx\n", mfn);
-        return INVALID_MFN;
-    }
-    /* read PT base address */
-    ipa = get_pt_addr_and_order(pg64[idx], &order);
-    unmap_domain_page(pg64);
     vinfo->mfn_pd = mfn;
-
-    if ( unlikely(!ipa) )
-    {
-        printk("No valid IPA for page table\n");
-        return INVALID_MFN;
-    }
-    /* FIXME: we only expect 4K pages for now */
-    BUG_ON(order != 0);
-    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-    printk("Page table IPA %lx MFN %lx\n", ipa, mfn);
-    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
-    {
-        printk("Failed to lookup page table\n");
-        return INVALID_MFN;
-    }
-
-    /* get index in the page table */
-    idx = vaddr_to_pte_idx(RGX_FIRMWARE_HEAP_BASE);
-    BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PT_VALUE);
-    pg64 = (uint64_t *)map_domain_page(mfn);
-    if ( unlikely(!pg64) )
-    {
-        printk("Failed to map page table MFN %lx\n", mfn);
-        return INVALID_MFN;
-    }
-    /* read PT base address */
-    ipa = get_pte_addr(pg64[idx]);
-    gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
-
-    unmap_domain_page(pg64);
-
-    if ( unlikely(!ipa) )
-    {
-        printk("No valid IPA for page table entry for vaddr %llx\n",
-               RGX_FIRMWARE_HEAP_BASE);
-        return INVALID_MFN;
-    }
-    mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-    printk("Page table entry IPA %lx MFN %lx\n", ipa, mfn);
-    if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
-    {
-        printk("Failed to lookup page table entry for %llx\n",
-                RGX_FIRMWARE_HEAP_BASE);
-        return INVALID_MFN;
-    }
-    return mfn;
+    return gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo, RGX_FIRMWARE_HEAP_BASE);
 }
 
 /*
