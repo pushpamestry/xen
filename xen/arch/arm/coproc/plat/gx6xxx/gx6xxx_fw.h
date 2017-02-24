@@ -22,14 +22,16 @@
 
 #include <xen/mm.h>
 
+#include "rgx_fwif.h"
+
 struct vcoproc_instance;
 struct vgx6xxx_info;
 
 int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
                    struct vgx6xxx_info *vinfo, mfn_t mfn_heap_base);
 
-uint32_t gx6xxx_fw_get_irq_count(struct vcoproc_instance *vcoproc,
-                                 struct vgx6xxx_info *vinfo);
+void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
+                      struct vgx6xxx_info *vinfo);
 
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_FW_H__ */
 

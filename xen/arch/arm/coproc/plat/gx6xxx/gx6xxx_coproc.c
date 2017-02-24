@@ -26,7 +26,6 @@
 #include <xen/vmap.h>
 
 #include "gx6xxx_coproc.h"
-#include "gx6xxx_fw.h"
 #include "gx6xxx_hexdump.h"
 #include "gx6xxx_mmu.h"
 #include "rgx_meta.h"
@@ -496,8 +495,6 @@ static void gx6xxx_irq_handler(int irq, void *dev,
         struct vcoproc_instance *vcoproc = info->curr;
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
-        printk("FW reports IRQ count %d\n", gx6xxx_fw_get_irq_count(vcoproc, vinfo));
-
 #if 0
         writel(RGXFW_CR_IRQ_CLEAR_MASK, info->reg_vaddr_irq_clear);
 #else
@@ -506,6 +503,16 @@ static void gx6xxx_irq_handler(int irq, void *dev,
         /* Save interrupt status register, so we can deliver to domain later. */
         vinfo->reg_val_irq_status.as.lo = irq_status;
         vgic_vcpu_inject_spi(vcoproc->domain, irq);
+
+        printk("FW reports IRQ count %d we have %d\n",
+               vinfo->fw_trace_buf->aui32InterruptCount[0],
+               atomic_read(&vinfo->irq_count));
+        /* from RGX kernel driver (rgxinit.c):
+         * we are handling any unhandled interrupts here so align the host
+         * count with the FW count
+         */
+        atomic_set(&vinfo->irq_count,
+                   vinfo->fw_trace_buf->aui32InterruptCount[0]);
     }
     spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
     printk("< %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
@@ -627,13 +634,26 @@ static int gx6xxx_write_via_slave_port32(struct coproc_device *coproc,
 }
 
 /* try stopping the GPU: 0 on success, <0 if still busy */
-static int gx6xxx_ctx_gpu_stop(struct coproc_device *coproc,
+static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo)
 {
-    int ret;
+    struct coproc_device *coproc = vcoproc->coproc;
+    int ret, retry;
 
     printk("%s GPU stopping =============================================\n", __FUNCTION__);
+    printk("%s FW reports %d vs Xen %d IRQs\n", __FUNCTION__,
+           vinfo->fw_trace_buf->aui32InterruptCount[0],
+           atomic_read(&vinfo->irq_count));
 
+    /* FIXME: need timeouts in ms */
+    retry = 1000;
+    while ( atomic_read(&vinfo->irq_count) != vinfo->fw_trace_buf->aui32InterruptCount[0] )
+    {
+        cpu_relax();
+        retry--;
+        if (!retry)
+            return -ETIMEDOUT;
+    }
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_SIDEKICK_IDLE,
                     RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),
                     RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN));
@@ -789,7 +809,7 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
         /* try stopping the GPU */
         /* FIXME: let late interrupts a chance to fire */
         spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
-        ret = gx6xxx_ctx_gpu_stop(coproc, vinfo);
+        ret = gx6xxx_ctx_gpu_stop(curr, vinfo);
         spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
         if ( ret < 0 )
         {
@@ -805,7 +825,7 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
         /* try stopping the GPU harder */
         /* FIXME: let late interrupts a chance to fire */
         spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
-        ret = gx6xxx_ctx_gpu_stop(coproc, vinfo);
+        ret = gx6xxx_ctx_gpu_stop(curr, vinfo);
         spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
         if ( ret < 0 )
         {
@@ -890,6 +910,9 @@ static int gx6xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
 
 static void gx6xxx_vcoproc_deinit(struct vcoproc_instance *vcoproc)
 {
+    struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+
+    gx6xxx_fw_deinit(vcoproc, vinfo);
     xfree(vcoproc->priv);
 }
 

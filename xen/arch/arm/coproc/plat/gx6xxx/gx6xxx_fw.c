@@ -1,7 +1,6 @@
 #include "gx6xxx_coproc.h"
 #include "gx6xxx_fw.h"
 #include "gx6xxx_mmu.h"
-#include "rgx_fwif.h"
 #include "rgx_meta.h"
 #include "rgxmmudefs_km.h"
 
@@ -55,9 +54,32 @@ out:
     return ret;
 }
 
+static int gx6xxx_fw_map_trace_buf(struct vcoproc_instance *vcoproc,
+                                   struct vgx6xxx_info *vinfo)
+{
+    if ( unlikely(!vinfo->maddr_trace_buf_ctl) )
+        return 0;
+    vinfo->fw_trace_buf_map = gx6xxx_mmu_map(paddr_to_pfn(vinfo->maddr_trace_buf_ctl));
+    if ( unlikely(!vinfo->fw_trace_buf_map) )
+        return -EFAULT;
+    vinfo->fw_trace_buf = (RGXFWIF_TRACEBUF *)(vinfo->fw_trace_buf_map +
+                           GX6XXX_MMU_PAGE_OFFSET(vinfo->maddr_trace_buf_ctl));
+    return 0;
+}
+
+static void gx6xxx_fw_unmap_trace_buf(struct vcoproc_instance *vcoproc,
+                                      struct vgx6xxx_info *vinfo)
+{
+    if ( vinfo->fw_trace_buf_map )
+        gx6xxx_mmu_unmap(vinfo->fw_trace_buf_map);
+    vinfo->fw_trace_buf = NULL;
+    vinfo->fw_trace_buf_map = NULL;
+}
+
 int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
                    struct vgx6xxx_info *vinfo, mfn_t mfn_heap_base)
 {
+    int ret;
     uint64_t fw_init_dev_addr;
     uint64_t *fw_cfg, *ptr = gx6xxx_mmu_map(mfn_heap_base);
 
@@ -87,24 +109,14 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
                                                          fw_init_dev_addr);
     if ( unlikely(vinfo->mfn_rgx_fwif_init == INVALID_MFN) )
         return -EFAULT;
-    return gx6xxx_fw_parse_init(vcoproc, vinfo);
+    ret = gx6xxx_fw_parse_init(vcoproc, vinfo);
+    if ( unlikely(ret < 0) )
+        return ret;
+    return gx6xxx_fw_map_trace_buf(vcoproc, vinfo);
 }
 
-uint32_t gx6xxx_fw_get_irq_count(struct vcoproc_instance *vcoproc,
-                                 struct vgx6xxx_info *vinfo)
+void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
+                      struct vgx6xxx_info *vinfo)
 {
-    unsigned char *ptr;
-    RGXFWIF_TRACEBUF *fw_trace_buf;
-    uint32_t irq_num;
-
-    if ( unlikely(!vinfo->maddr_trace_buf_ctl) )
-        return 0;
-    ptr = gx6xxx_mmu_map(paddr_to_pfn(vinfo->maddr_trace_buf_ctl));
-    if ( unlikely(!ptr) )
-        return 0;
-    fw_trace_buf = (RGXFWIF_TRACEBUF *)(ptr + GX6XXX_MMU_PAGE_OFFSET(vinfo->maddr_trace_buf_ctl));
-    irq_num = fw_trace_buf->aui32InterruptCount[0];
-    gx6xxx_mmu_unmap(ptr);
-    return irq_num;
+    gx6xxx_fw_unmap_trace_buf(vcoproc, vinfo);
 }
-

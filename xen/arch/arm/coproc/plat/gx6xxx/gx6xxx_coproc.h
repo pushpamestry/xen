@@ -20,9 +20,13 @@
 #ifndef __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__
 #define __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__
 
+#include <xen/atomic.h>
+
 #include "../../coproc.h"
 #include "../common.h"
 #include "config_kernel.h"
+
+#include "gx6xxx_fw.h"
 
 enum vgx6xxx_state
 {
@@ -55,6 +59,17 @@ struct vgx6xxx_info
 
     /* set if scheduler has been started for this vcoproc */
     bool scheduler_started;
+
+    /* number of IRQs received - used to match if IRQ expected
+     * at switch from time
+     */
+    atomic_t irq_count;
+
+    /* FIXME: trace buffer is frequently used, so it is mapped on
+     * vcoproc init and unmapped on deinit
+     */
+    RGXFWIF_TRACEBUF *fw_trace_buf;
+    void *fw_trace_buf_map;
 
     /*
      ***************************************************************************
