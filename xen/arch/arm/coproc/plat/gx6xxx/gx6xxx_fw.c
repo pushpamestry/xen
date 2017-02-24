@@ -81,7 +81,7 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
 {
     int ret;
     uint64_t fw_init_dev_addr;
-    uint64_t *fw_cfg, *ptr = gx6xxx_mmu_map(mfn_heap_base);
+    uint64_t *fw_cfg, *fw_cfg_last, *ptr = gx6xxx_mmu_map(mfn_heap_base);
 
     vinfo->mfn_rgx_fwif_init = INVALID_MFN;
     if ( unlikely(!ptr) )
@@ -90,15 +90,21 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
      * to the configuration
      */
     fw_cfg = ptr;
+    /* must not read after this pointer */
+    fw_cfg_last = ptr + PAGE_SIZE/sizeof(*ptr);
     fw_cfg += RGXFW_BOOTLDR_CONF_OFFSET / 2;
     /* now skip all non-zero values - those are pairs of register:value
      * used by the firmware during initialization
      */
-    while (*fw_cfg++)
+    while ( (fw_cfg < fw_cfg_last) && *fw_cfg++ )
         continue;
+    if ( fw_cfg == fw_cfg_last )
+    {
+        dev_err(vcoproc->coproc->dev, "failed to find RGXFWIF_INIT structure\n");
+        return -EINVAL;
+    }
     /* right after the terminator (64-bits of zeros) there is a pointer
      * to the RGXFWIF_INIT structure
-     * TODO: check for wrong configuration - do not read after the page end
      */
     /* convert the address from META address space into what MMU sees */
     fw_init_dev_addr = gx6xxx_mmu_meta_to_dev_vaddr(*((uint32_t *)fw_cfg));
