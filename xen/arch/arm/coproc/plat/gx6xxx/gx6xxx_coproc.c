@@ -34,7 +34,7 @@
 
 #define GX6XXX_NUM_IRQ          1
 #define GX6XXX_NUM_MMIO         1
-#define GX6XXX_IRQ_POLL_TO_US   500
+#define GX6XXX_POLL_TO_US       500
 
 #if 1
 #define GX6XXX_DEBUG 1
@@ -564,7 +564,7 @@ int gx6xxx_poll_reg32(struct coproc_device *coproc, uint32_t offset,
                       uint32_t expected, uint32_t mask)
 {
     uint32_t val;
-    int retry = 10;
+    int retry = GX6XXX_POLL_TO_US;
 
     gx6xxx_debug = false;
     do
@@ -577,6 +577,7 @@ int gx6xxx_poll_reg32(struct coproc_device *coproc, uint32_t offset,
             return 0;
         }
         cpu_relax();
+        udelay(1);
     } while (retry--);
     printk("%s expected %08x got %08x ))))))))))))))))))))))))))))))))))))))))\n",
                     __FUNCTION__, expected, val);
@@ -588,7 +589,7 @@ int gx6xxx_poll_reg64(struct coproc_device *coproc, uint32_t offset,
                       uint64_t expected, uint64_t mask)
 {
     uint64_t val;
-    int retry = 10;
+    int retry = GX6XXX_POLL_TO_US;
 
     gx6xxx_debug = false;
     do
@@ -601,6 +602,7 @@ int gx6xxx_poll_reg64(struct coproc_device *coproc, uint32_t offset,
             return 0;
         }
         cpu_relax();
+        udelay(1);
     } while (retry--);
     gx6xxx_debug = true;
     printk("%s expected %016lx got %016lx ))))))))))))))))))))))))))))))))))))))))\n",
@@ -640,7 +642,7 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
            vinfo->fw_trace_buf->aui32InterruptCount[0],
            atomic_read(&vinfo->irq_count));
 
-    retry = GX6XXX_IRQ_POLL_TO_US;
+    retry = GX6XXX_POLL_TO_US;
     while ( atomic_read(&vinfo->irq_count) !=
             vinfo->fw_trace_buf->aui32InterruptCount[0] )
     {
