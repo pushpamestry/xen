@@ -901,15 +901,15 @@ static const struct coproc_ops gx6xxx_vcoproc_ops = {
     .ctx_switch_to       = gx6xxx_ctx_switch_to,
 };
 
-static int gx6xxx_dt_probe(struct platform_device *pdev)
+static int gx6xxx_dt_probe(struct dt_device_node *np)
 {
     struct coproc_device *coproc;
-    struct device *dev = &pdev->dev;
+    struct device *dev = &np->dev;
     struct gx6xxx_info *info;
     char *reg_base;
     int ret;
 
-    coproc = coproc_alloc(pdev, &gx6xxx_vcoproc_ops);
+    coproc = coproc_alloc(np, &gx6xxx_vcoproc_ops);
     if ( IS_ERR_OR_NULL(coproc) )
         return PTR_ERR(coproc);
 
