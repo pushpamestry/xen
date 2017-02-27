@@ -65,10 +65,14 @@ struct vgx6xxx_info
      */
     atomic_t irq_count;
 
-    /* FIXME: trace buffer is frequently used, so it is mapped on
+    /* FIXME: the below are frequently used, so they are mapped on
      * vcoproc init and unmapped on deinit
      */
     RGXFWIF_TRACEBUF *fw_trace_buf;
+    IMG_UINT8 *fw_kernel_ccb;
+    RGXFWIF_CCB_CTL *fw_kernel_ccb_ctl;
+    IMG_UINT8 *fw_firmware_ccb;
+    RGXFWIF_CCB_CTL *fw_firmware_ccb_ctl;
 
     /*
      ***************************************************************************

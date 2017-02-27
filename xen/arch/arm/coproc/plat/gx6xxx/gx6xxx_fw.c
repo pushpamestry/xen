@@ -1,8 +1,6 @@
 #include "gx6xxx_coproc.h"
 #include "gx6xxx_fw.h"
 #include "gx6xxx_mmu.h"
-#include "rgx_meta.h"
-#include "rgxmmudefs_km.h"
 
 static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
                                 struct vgx6xxx_info *vinfo)
@@ -54,37 +52,31 @@ out:
     return ret;
 }
 
-static int gx6xxx_fw_map_trace_buf(struct vcoproc_instance *vcoproc,
-                                   struct vgx6xxx_info *vinfo)
+static void *gx6xxx_fw_map_buf(paddr_t maddr)
 {
     unsigned char *vaddr;
 
-    if ( unlikely(!vinfo->maddr_trace_buf_ctl) )
+    if ( unlikely(!maddr) )
         return 0;
-    vaddr = gx6xxx_mmu_map(paddr_to_pfn(vinfo->maddr_trace_buf_ctl));
+    /* FIXME: is it ok to map same page twice or more?
+     * this can happen if CCBs are sharing the same page
+     */
+    vaddr = gx6xxx_mmu_map(paddr_to_pfn(maddr));
     if ( unlikely(!vaddr) )
-        return -EFAULT;
-    vinfo->fw_trace_buf = (RGXFWIF_TRACEBUF *)(vaddr +
-                           GX6XXX_MMU_PAGE_OFFSET(vinfo->maddr_trace_buf_ctl));
-    return 0;
+        return ERR_PTR(-EFAULT);
+    return vaddr + GX6XXX_MMU_PAGE_OFFSET(maddr);
 }
 
-static void gx6xxx_fw_unmap_trace_buf(struct vcoproc_instance *vcoproc,
-                                      struct vgx6xxx_info *vinfo)
+static void gx6xxx_fw_unmap_buf(void *vaddr)
 {
-    unsigned char *vaddr;
-
-    /* FIXME: can unmap accept non page aligned vaddr? */
-    vaddr = (unsigned char *)vinfo->fw_trace_buf -
-             GX6XXX_MMU_PAGE_OFFSET(vinfo->maddr_trace_buf_ctl);
-    if ( vaddr )
-        gx6xxx_mmu_unmap(vaddr);
-    vinfo->fw_trace_buf = NULL;
+    if ( !IS_ERR_OR_NULL(vaddr) )
+        gx6xxx_mmu_unmap((void *)((paddr_t)vaddr & PAGE_MASK));
 }
 
 int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
                    struct vgx6xxx_info *vinfo, mfn_t mfn_heap_base)
 {
+    const char *err_msg;
     int ret;
     uint64_t fw_init_dev_addr;
     uint64_t *fw_cfg, *fw_cfg_last, *ptr = gx6xxx_mmu_map(mfn_heap_base);
@@ -124,11 +116,54 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
     ret = gx6xxx_fw_parse_init(vcoproc, vinfo);
     if ( unlikely(ret < 0) )
         return ret;
-    return gx6xxx_fw_map_trace_buf(vcoproc, vinfo);
+    vinfo->fw_trace_buf = gx6xxx_fw_map_buf(vinfo->maddr_trace_buf_ctl);
+    if ( IS_ERR_OR_NULL(vinfo->fw_trace_buf) )
+    {
+        err_msg = "FW trace buffer";
+        ret = PTR_ERR(vinfo->fw_trace_buf);
+        goto fail;
+    }
+    vinfo->fw_kernel_ccb_ctl = gx6xxx_fw_map_buf(vinfo->maddr_kernel_ccb_ctl);
+    if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb_ctl) )
+    {
+        err_msg = "Kernel CCBCtl";
+        ret = PTR_ERR(vinfo->fw_kernel_ccb_ctl);
+        goto fail;
+    }
+    vinfo->fw_kernel_ccb = gx6xxx_fw_map_buf(vinfo->maddr_kernel_ccb);
+    if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb) )
+    {
+        err_msg = "Kernel CCB";
+        ret = PTR_ERR(vinfo->fw_kernel_ccb);
+        goto fail;
+    }
+    vinfo->fw_firmware_ccb_ctl = gx6xxx_fw_map_buf(vinfo->maddr_firmware_ccb_ctl);
+    if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb_ctl) )
+    {
+        err_msg = "Firmware CCBCtl";
+        ret = PTR_ERR(vinfo->fw_firmware_ccb_ctl);
+        goto fail;
+    }
+    vinfo->fw_firmware_ccb = gx6xxx_fw_map_buf(vinfo->maddr_firmware_ccb);
+    if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb) )
+    {
+        err_msg = "Firmware CCB";
+        ret = PTR_ERR(vinfo->fw_firmware_ccb);
+        goto fail;
+    }
+    return 0;
+
+fail:
+    dev_err(vcoproc->coproc->dev, "failed to map %s\n", err_msg);
+    return ret;
 }
 
 void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
                       struct vgx6xxx_info *vinfo)
 {
-    gx6xxx_fw_unmap_trace_buf(vcoproc, vinfo);
+    gx6xxx_fw_unmap_buf(vinfo->fw_trace_buf);
+    gx6xxx_fw_unmap_buf(vinfo->fw_kernel_ccb);
+    gx6xxx_fw_unmap_buf(vinfo->fw_kernel_ccb_ctl);
+    gx6xxx_fw_unmap_buf(vinfo->fw_firmware_ccb);
+    gx6xxx_fw_unmap_buf(vinfo->fw_firmware_ccb_ctl);
 }

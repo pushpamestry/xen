@@ -23,6 +23,9 @@
 #include <xen/mm.h>
 
 #include "rgx_fwif.h"
+#include "rgx_fwif_km.h"
+#include "rgx_meta.h"
+#include "rgxmmudefs_km.h"
 
 struct vcoproc_instance;
 struct vgx6xxx_info;
