@@ -463,8 +463,6 @@ static void gx6xxx_irq_handler(int irq, void *dev,
          * we are handling any unhandled interrupts here so align the host
          * count with the FW count
          */
-        clean_and_invalidate_dcache_va_range(vinfo->fw_trace_buf,
-                                             sizeof(*vinfo->fw_trace_buf));
         atomic_set(&vinfo->irq_count,
                    vinfo->fw_trace_buf->aui32InterruptCount[0]);
     }
@@ -552,7 +550,6 @@ int gx6xxx_poll_val32(volatile uint32_t *val, uint32_t expected, uint32_t mask)
     gx6xxx_debug = false;
     do
     {
-        clean_and_invalidate_dcache_va_range((uint32_t *)val, sizeof(*val));
         if ( (*val & mask)  == expected )
         {
             gx6xxx_debug = true;
@@ -630,7 +627,6 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
     pow_cmd.uCmdData.sPowData.uPoweReqData.bForced = false;
     for (i = 0; i < RGXFWIF_DM_MAX; i++)
     {
-        clean_and_invalidate_dcache_va_range(vinfo->fw_trace_buf, sizeof(*vinfo->fw_trace_buf));
         printk("%s FW reports %d vs Xen %d IRQs\n", __FUNCTION__,
                vinfo->fw_trace_buf->aui32InterruptCount[0],
                atomic_read(&vinfo->irq_count));
@@ -645,7 +641,6 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
 
     ret = gx6xxx_poll_val32(vinfo->fw_power_sync, 0x1, 0xFFFFFFFF);
 
-    clean_and_invalidate_dcache_va_range(vinfo->fw_trace_buf, sizeof(*vinfo->fw_trace_buf));
     printk("%s sPowerState is %d\n", __FUNCTION__, vinfo->fw_trace_buf->ePowState);
     printk("%s FW reports %d vs Xen %d IRQs\n", __FUNCTION__,
            vinfo->fw_trace_buf->aui32InterruptCount[0],
@@ -659,7 +654,6 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
         if (!retry--)
             return -ETIMEDOUT;
         udelay(1);
-        clean_and_invalidate_dcache_va_range(vinfo->fw_trace_buf, sizeof(*vinfo->fw_trace_buf));
     }
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_SIDEKICK_IDLE,
                             RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),

@@ -22,6 +22,7 @@
 
 #include <xen/domain_page.h>
 #include <xen/err.h>
+#include <xen/vmap.h>
 
 #include "rgx_fwif_km.h"
 
@@ -51,7 +52,11 @@ static inline uint64_t gx6xxx_mmu_meta_to_dev_vaddr(uint32_t meta_addr)
 
 static inline void *gx6xxx_mmu_map(mfn_t mfn)
 {
+#if 0
     void *vaddr = map_domain_page(mfn);
+#else
+    void *vaddr = ioremap_nocache(pfn_to_paddr(mfn), PAGE_SIZE);
+#endif
     if ( unlikely(!vaddr) )
     {
         printk("Failed to map page with MFN %lx\n", mfn);
@@ -63,7 +68,11 @@ static inline void *gx6xxx_mmu_map(mfn_t mfn)
 static inline void gx6xxx_mmu_unmap(void *vaddr)
 {
     if ( likely(vaddr) )
+#if 0
         unmap_domain_page(vaddr);
+#else
+        iounmap(vaddr);
+#endif
 }
 
 mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,

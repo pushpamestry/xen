@@ -194,12 +194,6 @@ void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo)
     uint32_t wrap_mask, read_ofs, write_ofs;
     const char *cmd_name;
 
-    /* FIXME: https://lists.gt.net/xen/devel/342092
-     * only clean is needed?
-     */
-    clean_and_invalidate_dcache_va_range(vinfo->fw_kernel_ccb_ctl,
-                                         sizeof(*vinfo->fw_kernel_ccb_ctl));
-
     /* we are stealing the read offset which is modified by the FW */
     read_ofs = vinfo->fw_kernel_ccb_ctl->ui32ReadOffset;
     write_ofs = vinfo->fw_kernel_ccb_ctl->ui32WriteOffset;
@@ -215,8 +209,6 @@ void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo)
         }
 
         cmd = ((RGXFWIF_KCCB_CMD *)vinfo->fw_kernel_ccb) + read_ofs;
-        /* FIXME: clean only? */
-        clean_and_invalidate_dcache_va_range(cmd, sizeof(*cmd));
 
         switch(cmd->eCmdType)
         {
@@ -285,11 +277,6 @@ int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
     memcpy(&vinfo->fw_firmware_ccb[curr_offset * cmd_sz], cmd, cmd_sz);
     smp_wmb();
     vinfo->fw_kernel_ccb_ctl->ui32WriteOffset = new_offset;
-#if 1
-    clean_and_invalidate_dcache_va_range(cmd, sizeof(*cmd));
-    clean_and_invalidate_dcache_va_range(vinfo->fw_kernel_ccb_ctl,
-                                         sizeof(*vinfo->fw_kernel_ccb_ctl));
-#endif
     gx6xxx_write32(vcoproc->coproc, RGX_CR_MTS_SCHEDULE,
                    RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
     printk("%s ui32WriteOffset %d\n", __FUNCTION__, new_offset);
