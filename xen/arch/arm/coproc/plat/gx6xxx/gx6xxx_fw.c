@@ -57,12 +57,14 @@ out:
 static int gx6xxx_fw_map_trace_buf(struct vcoproc_instance *vcoproc,
                                    struct vgx6xxx_info *vinfo)
 {
+    unsigned char *vaddr;
+
     if ( unlikely(!vinfo->maddr_trace_buf_ctl) )
         return 0;
-    vinfo->fw_trace_buf_map = gx6xxx_mmu_map(paddr_to_pfn(vinfo->maddr_trace_buf_ctl));
-    if ( unlikely(!vinfo->fw_trace_buf_map) )
+    vaddr = gx6xxx_mmu_map(paddr_to_pfn(vinfo->maddr_trace_buf_ctl));
+    if ( unlikely(!vaddr) )
         return -EFAULT;
-    vinfo->fw_trace_buf = (RGXFWIF_TRACEBUF *)(vinfo->fw_trace_buf_map +
+    vinfo->fw_trace_buf = (RGXFWIF_TRACEBUF *)(vaddr +
                            GX6XXX_MMU_PAGE_OFFSET(vinfo->maddr_trace_buf_ctl));
     return 0;
 }
@@ -70,10 +72,14 @@ static int gx6xxx_fw_map_trace_buf(struct vcoproc_instance *vcoproc,
 static void gx6xxx_fw_unmap_trace_buf(struct vcoproc_instance *vcoproc,
                                       struct vgx6xxx_info *vinfo)
 {
-    if ( vinfo->fw_trace_buf_map )
-        gx6xxx_mmu_unmap(vinfo->fw_trace_buf_map);
+    unsigned char *vaddr;
+
+    /* FIXME: can unmap accept non page aligned vaddr? */
+    vaddr = (unsigned char *)vinfo->fw_trace_buf -
+             GX6XXX_MMU_PAGE_OFFSET(vinfo->maddr_trace_buf_ctl);
+    if ( vaddr )
+        gx6xxx_mmu_unmap(vaddr);
     vinfo->fw_trace_buf = NULL;
-    vinfo->fw_trace_buf_map = NULL;
 }
 
 int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,

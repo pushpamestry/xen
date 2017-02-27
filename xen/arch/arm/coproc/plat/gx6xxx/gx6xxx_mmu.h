@@ -54,7 +54,7 @@ static inline void *gx6xxx_mmu_map(mfn_t mfn)
     void *vaddr = map_domain_page(mfn);
     if ( unlikely(!vaddr) )
     {
-        printk("Failed to map page table MFN %lx\n", mfn);
+        printk("Failed to map page with MFN %lx\n", mfn);
         return ERR_PTR(-EINVAL);
     }
     return vaddr;

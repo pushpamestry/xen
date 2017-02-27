@@ -69,7 +69,6 @@ struct vgx6xxx_info
      * vcoproc init and unmapped on deinit
      */
     RGXFWIF_TRACEBUF *fw_trace_buf;
-    void *fw_trace_buf_map;
 
     /*
      ***************************************************************************
