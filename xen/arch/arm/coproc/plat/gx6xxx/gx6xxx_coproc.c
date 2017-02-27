@@ -432,6 +432,10 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
     }
     if ( vinfo->state == VGX6XXX_STATE_RUNNING )
     {
+#ifdef GX6XXX_DEBUG
+        if ( likely(ctx.offset == RGX_CR_MTS_SCHEDULE) )
+            gx6xxx_dump_kernel_ccb(vinfo);
+#endif
         gx6xxx_write32(ctx.coproc, ctx.offset, r);
 
     }

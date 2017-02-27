@@ -36,6 +36,8 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
 void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
                       struct vgx6xxx_info *vinfo);
 
+void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo);
+
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_FW_H__ */
 
 /*

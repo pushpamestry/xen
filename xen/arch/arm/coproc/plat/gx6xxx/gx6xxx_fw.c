@@ -167,3 +167,62 @@ void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
     gx6xxx_fw_unmap_buf(vinfo->fw_firmware_ccb);
     gx6xxx_fw_unmap_buf(vinfo->fw_firmware_ccb_ctl);
 }
+
+/* get new write offset for Kernel messages to FW */
+void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo)
+{
+    uint32_t wrap_mask, read_ofs, write_ofs;
+    const char *cmd_name;
+
+    /* FIXME: https://lists.gt.net/xen/devel/342092
+     * only clean is needed?
+     */
+    clean_and_invalidate_dcache_va_range(vinfo->fw_kernel_ccb_ctl,
+                                         sizeof(*vinfo->fw_kernel_ccb_ctl));
+
+    /* we are stealing the read offset which is modified by the FW */
+    read_ofs = vinfo->fw_kernel_ccb_ctl->ui32ReadOffset;
+    write_ofs = vinfo->fw_kernel_ccb_ctl->ui32WriteOffset;
+    wrap_mask = vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
+    while ( read_ofs != write_ofs )
+    {
+        RGXFWIF_KCCB_CMD *cmd;
+
+        if ( read_ofs > wrap_mask || write_ofs > wrap_mask )
+        {
+            printk("Stalled messages???\n");
+            return;
+        }
+
+        cmd = ((RGXFWIF_KCCB_CMD *)vinfo->fw_kernel_ccb) + read_ofs;
+        /* FIXME: clean only? */
+        clean_and_invalidate_dcache_va_range(cmd, sizeof(*cmd));
+
+        switch(cmd->eCmdType)
+        {
+        case RGXFWIF_KCCB_CMD_KICK:
+            cmd_name = "RGXFWIF_KCCB_CMD_KICK";
+            break;
+        case RGXFWIF_KCCB_CMD_MMUCACHE:
+            cmd_name = "RGXFWIF_KCCB_CMD_MMUCACHE";
+            break;
+        case RGXFWIF_KCCB_CMD_SYNC:
+            cmd_name = "RGXFWIF_KCCB_CMD_SYNC";
+            break;
+        case RGXFWIF_KCCB_CMD_SLCFLUSHINVAL:
+            cmd_name = "RGXFWIF_KCCB_CMD_SLCFLUSHINVAL";
+            break;
+        case RGXFWIF_KCCB_CMD_CLEANUP:
+            cmd_name = "RGXFWIF_KCCB_CMD_CLEANUP";
+            break;
+        case RGXFWIF_KCCB_CMD_HEALTH_CHECK:
+            cmd_name = "RGXFWIF_KCCB_CMD_HEALTH_CHECK";
+            break;
+        default:
+            printk("Unknown KCCB command: %d\n", cmd->eCmdType);
+            BUG();
+        }
+        printk("KCCB cmd: %s (%d)\n", cmd_name, cmd->eCmdType);
+        read_ofs = (read_ofs + 1) & wrap_mask;
+    }
+}
