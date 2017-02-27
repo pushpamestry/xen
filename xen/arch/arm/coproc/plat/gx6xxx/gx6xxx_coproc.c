@@ -17,7 +17,6 @@
  * GNU General Public License for more details.
  */
 
-#include <asm/io.h>
 #include <xen/delay.h>
 #include <xen/domain_page.h>
 #include <xen/err.h>
@@ -35,10 +34,6 @@
 #define GX6XXX_NUM_IRQ          1
 #define GX6XXX_NUM_MMIO         1
 #define GX6XXX_POLL_TO_US       500
-
-#if 1
-#define GX6XXX_DEBUG 1
-#endif
 
 static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
 {
@@ -76,13 +71,10 @@ static inline void gx6xxx_set_state(struct vcoproc_instance *vcoproc,
     vinfo->state = state;
 }
 
-#define REG_LO32(a) ( (a) )
-#define REG_HI32(a) ( (a) + sizeof(uint32_t) )
-
 bool gx6xxx_debug = true;
 
 #ifdef GX6XXX_DEBUG
-static void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
+void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
 {
     char *name;
 
@@ -205,52 +197,11 @@ static void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
 #define gx6xxx_print_reg(a, b, c) {}
 #endif
 
-static inline uint32_t gx6xxx_read32(struct coproc_device *coproc,
-                                     uint32_t offset)
-{
-#ifdef GX6XXX_DEBUG
-    uint32_t val = readl((char *)coproc->mmios[0].base + offset);
-
-    gx6xxx_print_reg(__FUNCTION__, offset, val);
-    return val;
-#else
-    return readl((char *)coproc->mmios[0].base + offset);
-#endif
-}
-
-static inline void gx6xxx_write32(struct coproc_device *coproc,
-                                  uint32_t offset, uint32_t val)
-{
-    gx6xxx_print_reg(__FUNCTION__, offset, val);
-    writel(val, (char *)coproc->mmios[0].base + offset);
-}
 
 static inline void gx6xxx_store32(uint32_t offset, uint32_t *reg, uint32_t val)
 {
     gx6xxx_print_reg(__FUNCTION__, offset, val);
     *reg = val;
-}
-
-static inline uint64_t gx6xxx_read64(struct coproc_device *coproc,
-                                     uint32_t offset)
-{
-#ifdef GX6XXX_DEBUG
-    uint64_t val = readq((char *)coproc->mmios[0].base + offset);
-
-    gx6xxx_print_reg(__FUNCTION__, REG_LO32(offset), val & 0xffffffff);
-    gx6xxx_print_reg(__FUNCTION__, REG_HI32(offset), val >> 32);
-    return val;
-#else
-    return readq((char *)coproc->mmios[0].base + offset);
-#endif
-}
-
-static inline void gx6xxx_write64(struct coproc_device *coproc,
-                                  uint32_t offset, uint64_t val)
-{
-    gx6xxx_print_reg(__FUNCTION__, REG_LO32(offset), val & 0xffffffff);
-    gx6xxx_print_reg(__FUNCTION__, REG_HI32(offset), val >> 32);
-    writeq(val, (char *)coproc->mmios[0].base + offset);
 }
 
 static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
@@ -478,7 +429,7 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     uint32_t irq_status;
     unsigned long flags;
 
-#if 0
+#if 1
     printk("> %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
 #endif
 
@@ -500,7 +451,10 @@ static void gx6xxx_irq_handler(int irq, void *dev,
 #endif
         /* Save interrupt status register, so we can deliver to domain later. */
         vinfo->reg_val_irq_status.as.lo = irq_status;
-        vgic_vcpu_inject_spi(vcoproc->domain, irq);
+        if ( likely(vinfo->state != VGX6XXX_STATE_IN_TRANSIT) )
+            vgic_vcpu_inject_spi(vcoproc->domain, irq);
+        else
+            printk("%s VGX6XXX_STATE_IN_TRANSIT\n", __FUNCTION__);
 
         printk("FW reports IRQ count %d we have %d\n",
                vinfo->fw_trace_buf->aui32InterruptCount[0],
@@ -509,11 +463,13 @@ static void gx6xxx_irq_handler(int irq, void *dev,
          * we are handling any unhandled interrupts here so align the host
          * count with the FW count
          */
+        clean_and_invalidate_dcache_va_range(vinfo->fw_trace_buf,
+                                             sizeof(*vinfo->fw_trace_buf));
         atomic_set(&vinfo->irq_count,
                    vinfo->fw_trace_buf->aui32InterruptCount[0]);
     }
     spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
-#if 0
+#if 1
     printk("< %s dom %d\n", __FUNCTION__, info->curr->domain->domain_id);
 #endif
     if ( info->curr->domain->domain_id )
@@ -589,6 +545,28 @@ int gx6xxx_poll_reg32(struct coproc_device *coproc, uint32_t offset,
     return -ETIMEDOUT;
 }
 
+int gx6xxx_poll_val32(volatile uint32_t *val, uint32_t expected, uint32_t mask)
+{
+    int retry = GX6XXX_POLL_TO_US;
+
+    gx6xxx_debug = false;
+    do
+    {
+        clean_and_invalidate_dcache_va_range((uint32_t *)val, sizeof(*val));
+        if ( (*val & mask)  == expected )
+        {
+            gx6xxx_debug = true;
+            return 0;
+        }
+        cpu_relax();
+        udelay(1);
+    } while (retry--);
+    printk("%s expected %08x got %08x ))))))))))))))))))))))))))))))))))))))))\n",
+                    __FUNCTION__, expected, *val);
+    gx6xxx_debug = true;
+    return -ETIMEDOUT;
+}
+
 int gx6xxx_poll_reg64(struct coproc_device *coproc, uint32_t offset,
                       uint64_t expected, uint64_t mask)
 {
@@ -639,9 +617,36 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo)
 {
     struct coproc_device *coproc = vcoproc->coproc;
-    int ret, retry;
+    int ret, retry, i;
+    RGXFWIF_KCCB_CMD pow_cmd;
 
-    printk("%s GPU stopping =============================================\n", __FUNCTION__);
+    printk("%s GPU stopping =============================================\n",
+           __FUNCTION__);
+
+    vinfo->fw_power_sync[0] = 1;
+
+    pow_cmd.eCmdType = RGXFWIF_KCCB_CMD_POW;
+    pow_cmd.uCmdData.sPowData.ePowType = RGXFWIF_POW_OFF_REQ;
+    pow_cmd.uCmdData.sPowData.uPoweReqData.bForced = false;
+    for (i = 0; i < RGXFWIF_DM_MAX; i++)
+    {
+        clean_and_invalidate_dcache_va_range(vinfo->fw_trace_buf, sizeof(*vinfo->fw_trace_buf));
+        printk("%s FW reports %d vs Xen %d IRQs\n", __FUNCTION__,
+               vinfo->fw_trace_buf->aui32InterruptCount[0],
+               atomic_read(&vinfo->irq_count));
+        pow_cmd.eDM = i;
+        ret = gx6xxx_send_kernel_ccb_cmd(vcoproc, vinfo, &pow_cmd);
+        if ( ret < 0)
+        {
+            dev_err(vcoproc->coproc->dev, "failed to send power off command to FW\n");
+            return ret;
+        }
+    }
+
+    ret = gx6xxx_poll_val32(vinfo->fw_power_sync, 0x1, 0xFFFFFFFF);
+
+    clean_and_invalidate_dcache_va_range(vinfo->fw_trace_buf, sizeof(*vinfo->fw_trace_buf));
+    printk("%s sPowerState is %d\n", __FUNCTION__, vinfo->fw_trace_buf->ePowState);
     printk("%s FW reports %d vs Xen %d IRQs\n", __FUNCTION__,
            vinfo->fw_trace_buf->aui32InterruptCount[0],
            atomic_read(&vinfo->irq_count));
@@ -654,6 +659,7 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
         if (!retry--)
             return -ETIMEDOUT;
         udelay(1);
+        clean_and_invalidate_dcache_va_range(vinfo->fw_trace_buf, sizeof(*vinfo->fw_trace_buf));
     }
     ret = gx6xxx_poll_reg32(coproc, RGX_CR_SIDEKICK_IDLE,
                             RGX_CR_SIDEKICK_IDLE_MASKFULL^(RGX_CR_SIDEKICK_IDLE_GARTEN_EN|RGX_CR_SIDEKICK_IDLE_SOCIF_EN|RGX_CR_SIDEKICK_IDLE_HOSTIF_EN),

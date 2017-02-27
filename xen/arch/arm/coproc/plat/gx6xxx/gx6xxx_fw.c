@@ -1,6 +1,13 @@
+#include <xen/delay.h>
+
 #include "gx6xxx_coproc.h"
 #include "gx6xxx_fw.h"
 #include "gx6xxx_mmu.h"
+
+/* this is the time out to wait for the firmware to consume
+ * a command sent from the kernel
+ */
+#define GX6XXX_WAIT_FW_TO_US    500
 
 static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
                                 struct vgx6xxx_info *vinfo)
@@ -13,6 +20,7 @@ static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
     vinfo->maddr_firmware_ccb = INVALID_MFN;
     vinfo->maddr_firmware_ccb_ctl = INVALID_MFN;
     vinfo->maddr_trace_buf_ctl = INVALID_MFN;
+    vinfo->maddr_power_sync = INVALID_MFN;
 
     if ( unlikely(!fw_init) )
     {
@@ -44,6 +52,11 @@ static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
     vinfo->maddr_trace_buf_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
                     gx6xxx_mmu_meta_to_dev_vaddr(fw_init->sTraceBufCtl.ui32Addr));
     if ( unlikely(vinfo->maddr_trace_buf_ctl == INVALID_MFN) )
+        goto out;
+
+    vinfo->maddr_power_sync = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
+                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->sPowerSync.ui32Addr));
+    if ( unlikely(vinfo->maddr_power_sync == INVALID_MFN) )
         goto out;
 
     ret = 0;
@@ -151,6 +164,13 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
         ret = PTR_ERR(vinfo->fw_firmware_ccb);
         goto fail;
     }
+    vinfo->fw_power_sync = gx6xxx_fw_map_buf(vinfo->maddr_power_sync);
+    if ( IS_ERR_OR_NULL(vinfo->fw_power_sync) )
+    {
+        err_msg = "PowerSync object";
+        ret = PTR_ERR(vinfo->fw_power_sync);
+        goto fail;
+    }
     return 0;
 
 fail:
@@ -208,6 +228,9 @@ void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo)
             break;
         case RGXFWIF_KCCB_CMD_SYNC:
             cmd_name = "RGXFWIF_KCCB_CMD_SYNC";
+            printk("RGXFWIF_KCCB_CMD_SYNC %x uiUpdateVal %d\n",
+                   cmd->uCmdData.sSyncData.sSyncObjDevVAddr.ui32Addr,
+                   cmd->uCmdData.sSyncData.uiUpdateVal);
             break;
         case RGXFWIF_KCCB_CMD_SLCFLUSHINVAL:
             cmd_name = "RGXFWIF_KCCB_CMD_SLCFLUSHINVAL";
@@ -219,10 +242,56 @@ void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo)
             cmd_name = "RGXFWIF_KCCB_CMD_HEALTH_CHECK";
             break;
         default:
-            printk("Unknown KCCB command: %d\n", cmd->eCmdType);
+            printk("Unknown KCCB command %d at ui32ReadOffset %d\n",
+                   cmd->eCmdType, read_ofs);
             BUG();
         }
         printk("KCCB cmd: %s (%d)\n", cmd_name, cmd->eCmdType);
         read_ofs = (read_ofs + 1) & wrap_mask;
     }
+}
+
+static int gx6xxx_get_kernel_ccb_slot(struct vgx6xxx_info *vinfo,
+                                      uint32_t *write_offset)
+{
+    uint32_t curr_offset, new_offset;
+    int retry = GX6XXX_WAIT_FW_TO_US;
+
+    curr_offset = vinfo->fw_kernel_ccb_ctl->ui32WriteOffset;
+    new_offset = (curr_offset + 1) & vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
+    do
+    {
+        if ( likely(new_offset != vinfo->fw_kernel_ccb_ctl->ui32ReadOffset) )
+        {
+            *write_offset = new_offset;
+            return 0;
+        }
+        udelay(1);
+    } while ( retry-- );
+    return -ETIMEDOUT;
+}
+
+int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
+                               struct vgx6xxx_info *vinfo,
+                               RGXFWIF_KCCB_CMD *cmd)
+{
+    uint32_t curr_offset, new_offset = 0, cmd_sz, ret;
+
+    curr_offset = vinfo->fw_kernel_ccb_ctl->ui32WriteOffset;
+    ret = gx6xxx_get_kernel_ccb_slot(vinfo, &new_offset);
+    if ( unlikely(ret < 0) )
+        return ret;
+    cmd_sz = vinfo->fw_kernel_ccb_ctl->ui32CmdSize;
+    memcpy(&vinfo->fw_firmware_ccb[curr_offset * cmd_sz], cmd, cmd_sz);
+    smp_wmb();
+    vinfo->fw_kernel_ccb_ctl->ui32WriteOffset = new_offset;
+#if 1
+    clean_and_invalidate_dcache_va_range(cmd, sizeof(*cmd));
+    clean_and_invalidate_dcache_va_range(vinfo->fw_kernel_ccb_ctl,
+                                         sizeof(*vinfo->fw_kernel_ccb_ctl));
+#endif
+    gx6xxx_write32(vcoproc->coproc, RGX_CR_MTS_SCHEDULE,
+                   RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
+    printk("%s ui32WriteOffset %d\n", __FUNCTION__, new_offset);
+    return 0;
 }

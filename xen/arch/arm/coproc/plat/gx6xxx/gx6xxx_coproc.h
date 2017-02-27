@@ -20,11 +20,16 @@
 #ifndef __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__
 #define __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__
 
+#include <asm/io.h>
 #include <xen/atomic.h>
 
 #include "../../coproc.h"
 #include "../common.h"
 #include "config_kernel.h"
+
+#if 1
+#define GX6XXX_DEBUG 1
+#endif
 
 #include "gx6xxx_fw.h"
 
@@ -73,6 +78,7 @@ struct vgx6xxx_info
     RGXFWIF_CCB_CTL *fw_kernel_ccb_ctl;
     IMG_UINT8 *fw_firmware_ccb;
     RGXFWIF_CCB_CTL *fw_firmware_ccb_ctl;
+    IMG_UINT32 *fw_power_sync;
 
     /*
      ***************************************************************************
@@ -138,7 +144,62 @@ struct vgx6xxx_info
     paddr_t maddr_firmware_ccb_ctl;
     /* sTraceBufCtl */
     paddr_t maddr_trace_buf_ctl;
+    /* sPowerSync */
+    paddr_t maddr_power_sync;
 };
+
+extern bool gx6xxx_debug;
+
+#ifdef GX6XXX_DEBUG
+void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val);
+#else
+#define gx6xxx_print_reg(a, b, c) {}
+#endif
+
+#define REG_LO32(a) ( (a) )
+#define REG_HI32(a) ( (a) + sizeof(uint32_t) )
+
+static inline uint32_t gx6xxx_read32(struct coproc_device *coproc,
+                                     uint32_t offset)
+{
+#ifdef GX6XXX_DEBUG
+    uint32_t val = readl((char *)coproc->mmios[0].base + offset);
+
+    gx6xxx_print_reg(__FUNCTION__, offset, val);
+    return val;
+#else
+    return readl((char *)coproc->mmios[0].base + offset);
+#endif
+}
+
+static inline void gx6xxx_write32(struct coproc_device *coproc,
+                                  uint32_t offset, uint32_t val)
+{
+    gx6xxx_print_reg(__FUNCTION__, offset, val);
+    writel(val, (char *)coproc->mmios[0].base + offset);
+}
+
+static inline uint64_t gx6xxx_read64(struct coproc_device *coproc,
+                                     uint32_t offset)
+{
+#ifdef GX6XXX_DEBUG
+    uint64_t val = readq((char *)coproc->mmios[0].base + offset);
+
+    gx6xxx_print_reg(__FUNCTION__, REG_LO32(offset), val & 0xffffffff);
+    gx6xxx_print_reg(__FUNCTION__, REG_HI32(offset), val >> 32);
+    return val;
+#else
+    return readq((char *)coproc->mmios[0].base + offset);
+#endif
+}
+
+static inline void gx6xxx_write64(struct coproc_device *coproc,
+                                  uint32_t offset, uint64_t val)
+{
+    gx6xxx_print_reg(__FUNCTION__, REG_LO32(offset), val & 0xffffffff);
+    gx6xxx_print_reg(__FUNCTION__, REG_HI32(offset), val >> 32);
+    writeq(val, (char *)coproc->mmios[0].base + offset);
+}
 
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__ */
 
