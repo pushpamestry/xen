@@ -39,7 +39,8 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
 void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
                       struct vgx6xxx_info *vinfo);
 
-void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo);
+void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
+                            struct vgx6xxx_info *vinfo);
 
 int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo,

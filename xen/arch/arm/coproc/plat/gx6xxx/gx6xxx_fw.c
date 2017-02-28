@@ -1,6 +1,7 @@
 #include <xen/delay.h>
 #include <xen/domain_page.h>
 #include <xen/err.h>
+#include <xen/pfn.h>
 #include <xen/vmap.h>
 
 #include "gx6xxx_coproc.h"
@@ -17,8 +18,6 @@
                                          RGXFW_SEGMMU_DATA_META_UNCACHED    | \
                                          RGXFW_SEGMMU_DATA_VIVT_SLC_CACHED  | \
                                          RGXFW_SEGMMU_DATA_VIVT_SLC_UNCACHED)
-
-#define GX6XXX_MMU_PAGE_OFFSET( a ) (a & ~PAGE_MASK)
 
 static inline uint64_t get_pd_addr(uint32_t pce)
 {
@@ -60,28 +59,31 @@ static inline int vaddr_to_pte_idx(uint64_t vaddr)
     return (vaddr & ~RGX_MMUCTRL_VADDR_PT_INDEX_CLRMSK) >> RGX_MMUCTRL_VADDR_PT_INDEX_SHIFT;
 }
 
-mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
-                                struct vgx6xxx_info *vinfo, uint64_t dev_vaddr)
+static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
+                                          struct vgx6xxx_info *vinfo,
+                                          uint64_t dev_vaddr)
 {
     int idx, order;
     mfn_t mfn;
     uint64_t *pg64;
     uint64_t ipa;
 
-#if 0
-    printk("%s dev_vaddr %lx\n", __FUNCTION__, dev_vaddr);
-#endif
+    dev_dbg(vcoproc->coproc->dev,
+            "%s dev_vaddr %lx\n", __FUNCTION__, dev_vaddr);
     /* get index in the page directory */
     idx = vaddr_to_pde_idx(dev_vaddr);
     BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PD_VALUE);
     pg64 = (uint64_t *)map_domain_page(vinfo->mfn_pd);
     if ( unlikely(!pg64) )
     {
-        printk("Failed to map page directory MFN %lx\n", vinfo->mfn_pd);
+        dev_err(vcoproc->coproc->dev,
+                "failed to map page directory MFN %lx\n", vinfo->mfn_pd);
         return INVALID_MFN;
     }
+    clean_and_invalidate_dcache_va_range(pg64, PAGE_SIZE);
+    dev_dbg(vcoproc->coproc->dev,
+            "page directory MFN %lx\n", vinfo->mfn_pd);
 #if 0
-    printk("Page directory MFN %lx\n", vinfo->mfn_pd);
     gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
 #endif
     /* read PT base address */
@@ -90,18 +92,16 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
 
     if ( unlikely(!ipa) )
     {
-        printk("No valid IPA for page table\n");
+        dev_err(vcoproc->coproc->dev, "no valid IPA for page table\n");
         return INVALID_MFN;
     }
     /* FIXME: we only expect 4K pages for now */
     BUG_ON(order != 0);
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-#if 0
-    printk("Page table IPA %lx MFN %lx\n", ipa, mfn);
-#endif
+    dev_dbg(vcoproc->coproc->dev, "page table IPA %lx MFN %lx\n", ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
-        printk("Failed to lookup page table\n");
+        dev_err(vcoproc->coproc->dev, "failed to lookup page table\n");
         return INVALID_MFN;
     }
     /* get index in the page table */
@@ -110,9 +110,10 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     pg64 = (uint64_t *)map_domain_page(mfn);
     if ( unlikely(!pg64) )
     {
-        printk("Failed to map page table MFN %lx\n", mfn);
+        dev_err(vcoproc->coproc->dev, "failed to map page table MFN %lx\n", mfn);
         return INVALID_MFN;
     }
+    clean_and_invalidate_dcache_va_range(pg64, PAGE_SIZE);
 #if 0
     gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
 #endif
@@ -122,64 +123,87 @@ mfn_t gx6xxx_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
 
     if ( unlikely(!ipa) )
     {
-        printk("No valid IPA for page table entry for vaddr %lx\n",
-               dev_vaddr);
+        dev_err(vcoproc->coproc->dev,
+                "no valid IPA for page table entry for vaddr %lx\n", dev_vaddr);
         return INVALID_MFN;
     }
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-#if 0
-    printk("Page table entry IPA %lx MFN %lx\n", ipa, mfn);
-#endif
+    dev_dbg(vcoproc->coproc->dev, "page table entry IPA %lx MFN %lx\n", ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
-        printk("Failed to lookup page table entry for %lx\n",
-                dev_vaddr);
+        dev_err(vcoproc->coproc->dev,
+                "failed to lookup page table entry for %lx\n", dev_vaddr);
         return INVALID_MFN;
     }
     return mfn;
 }
 
-static inline uint64_t gx6xxx_mmu_meta_to_dev_vaddr(uint32_t meta_addr)
+static inline uint64_t gx6xxx_fw_mmu_meta_to_dev_vaddr(uint32_t meta_addr)
 {
     return (meta_addr & ~RGXFW_SEGMMU_DATA_CACHE_MASK) +
             RGX_FIRMWARE_HEAP_BASE;
 }
 
-static inline void *gx6xxx_mmu_map(mfn_t mfn)
+/* N.B. Kernel driver allocates structures shared with the FW from a
+ * contigous heap. Thus, there is no guarantee that what we map is
+ * PAGE_SIZE aligned. What is more, even 8-byte structure can be
+ * spread over 2 consecutive pages, e.g. 4 bytes at the end of a page
+ * and 4 bytes at the very beginning
+ */
+static inline void *gx6xxx_fw_mmu_map(struct vcoproc_instance *vcoproc,
+                                      struct vgx6xxx_info *vinfo,
+                                      uint64_t fw_dev_addr, size_t size)
 {
-#if 0
-    void *vaddr = map_domain_page(mfn);
-#else
-    void *vaddr = ioremap_nocache(pfn_to_paddr(mfn), PAGE_SIZE);
-#endif
+    /* FIXME: up to 3 pages can be mapped */
+    mfn_t mfn[3];
+    unsigned char *vaddr;
+    size_t map_sz, left_sz;
+    uint32_t offset;
+    uint64_t cur_dev_addr;
+    int i;
+
+    dev_dbg(vcoproc->coproc->dev, "mapping dev address %lx, size %zu\n",
+            fw_dev_addr, size);
+    /* TODO: we only map buffers less than 2 pages for now */
+    BUG_ON(size > PAGE_SIZE * 2);
+
+    cur_dev_addr = fw_dev_addr & PAGE_MASK;
+    offset = fw_dev_addr & (PAGE_SIZE - 1);
+    map_sz = offset + size <= PAGE_SIZE ? size : PAGE_SIZE - offset;
+    left_sz = size;
+    for (i = 0; i < ARRAY_SIZE(mfn); i++)
+    {
+        /* this mapping fits into a single page */
+        mfn[i] = gx6xxx_fw_mmu_devaddr_to_mfn(vcoproc, vinfo, cur_dev_addr);
+        if ( unlikely(mfn[i] == INVALID_MFN) )
+        {
+            dev_err(vcoproc->coproc->dev,
+                    "failed to find MFN for dev address %lx\n",
+                    cur_dev_addr);
+            return ERR_PTR(-EINVAL);
+        }
+        left_sz -= map_sz;
+        if ( !left_sz )
+            break;
+        cur_dev_addr += PAGE_SIZE;
+        map_sz = left_sz <= PAGE_SIZE ? left_sz : PAGE_SIZE;
+    }
+    vaddr = __vmap(mfn, PFN_UP(offset + size), 1, 1,
+                   PAGE_HYPERVISOR_NOCACHE, VMAP_DEFAULT);
     if ( unlikely(!vaddr) )
     {
-        printk("Failed to map page with MFN %lx\n", mfn);
+        dev_err(vcoproc->coproc->dev,
+                "failed to map for dev address %lx\n", fw_dev_addr);
         return ERR_PTR(-EINVAL);
     }
-    return vaddr;
+    return vaddr + offset;
 }
 
-static inline void gx6xxx_mmu_unmap(void *vaddr)
+static inline void gx6xxx_fw_mmu_unmap(void *vaddr)
 {
-    if ( likely(vaddr) )
-#if 0
-        unmap_domain_page(vaddr);
-#else
-        iounmap(vaddr);
-#endif
-}
-
-static inline paddr_t gx6xxx_mmu_devaddr_to_maddr(struct vcoproc_instance *vcoproc,
-                                                  struct vgx6xxx_info *vinfo,
-                                                  uint64_t dev_vaddr)
-{
-    mfn_t mfn;
-
-    mfn = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo, dev_vaddr);
-    if ( unlikely(mfn == INVALID_MFN) )
-        return 0;
-    return pfn_to_paddr(mfn) + GX6XXX_MMU_PAGE_OFFSET(dev_vaddr);
+    if ( unlikely(!IS_ERR_OR_NULL(vaddr)) )
+        return;
+    vunmap((void *)((uint64_t)vaddr & PAGE_MASK));
 }
 
 /* Setup of Px Entries:
@@ -204,9 +228,12 @@ static inline paddr_t gx6xxx_mmu_devaddr_to_maddr(struct vcoproc_instance *vcopr
  *
  */
 
-
-static mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
-                             struct vgx6xxx_info *vinfo)
+/*
+ * Find MFNs for page catalog and page directory,
+ * so we don't need to lookup those during translations
+ */
+static int gx6xxx_fw_mmu_init(struct vcoproc_instance *vcoproc,
+                              struct vgx6xxx_info *vinfo)
 {
     uint64_t ipa;
     uint32_t *pgc;
@@ -215,20 +242,17 @@ static mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
 
     vinfo->mfn_pc = INVALID_MFN;
     vinfo->mfn_pd = INVALID_MFN;
-    vinfo->mfn_rgx_fwif_init = INVALID_MFN;
 
     /* FIXME: reg_val_cr_bif_cat_base0 has a physical address of the page
      * catalog (PC) which is one page */
     /* FIXME: only one page must be in PC which is page directory (PD) */
     ipa = vinfo->reg_val_cr_bif_cat_base0.val;
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-#if 0
-    printk("Page catalog IPA %lx MFN %lx\n", ipa, mfn);
-#endif
+    dev_dbg(vcoproc->coproc->dev, "page catalog IPA %lx MFN %lx\n", ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
-        printk("Failed to lookup page catalog\n");
-        return INVALID_MFN;
+        dev_err(vcoproc->coproc->dev, "failed to lookup page catalog\n");
+        return -EINVAL;
     }
     /* get index in the page catalog */
     idx = vaddr_to_pce_idx(RGX_FIRMWARE_HEAP_BASE);
@@ -236,9 +260,11 @@ static mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
     pgc = (uint32_t *)map_domain_page(mfn);
     if ( unlikely(!pgc) )
     {
-        printk("Failed to map page catalog MFN %lx\n", mfn);
-        return INVALID_MFN;
+        dev_err(vcoproc->coproc->dev,
+                "failed to map page catalog, MFN %lx\n", mfn);
+        return -EINVAL;
     }
+    clean_and_invalidate_dcache_va_range(pgc, PAGE_SIZE);
 #if 0
     gx6xxx_dump(pgc, PAGE_SIZE);
 #endif
@@ -249,128 +275,138 @@ static mfn_t gx6xxx_mmu_init(struct vcoproc_instance *vcoproc,
 
     if ( unlikely(!ipa) )
     {
-        printk("No valid IPA for page directory\n");
-        return INVALID_MFN;
+        dev_err(vcoproc->coproc->dev, "no valid IPA for page directory\n");
+        return -EINVAL;
     }
     /* we have page catalog entry, so we can read page directory */
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-#if 0
-    printk("Page directory IPA %lx MFN %lx\n", ipa, mfn);
-#endif
+    dev_dbg(vcoproc->coproc->dev, "page directory IPA %lx MFN %lx\n", ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
-        printk("Failed to lookup page directory\n");
-        return INVALID_MFN;
+        dev_err(vcoproc->coproc->dev, "failed to lookup page directory\n");
+        return -EINVAL;
     }
     vinfo->mfn_pd = mfn;
-    return gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo, RGX_FIRMWARE_HEAP_BASE);
+    return 0;
 }
 
-static int gx6xxx_fw_parse_init(struct vcoproc_instance *vcoproc,
-                                struct vgx6xxx_info *vinfo)
+static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
+                             struct vgx6xxx_info *vinfo,
+                             uint64_t fw_init_dev_addr)
 {
-    int ret = -EFAULT;
-    RGXFWIF_INIT *fw_init = gx6xxx_mmu_map(vinfo->mfn_rgx_fwif_init);
+    RGXFWIF_INIT *fw_init;
+    uint64_t fw_dev_addr;
+    size_t size;
+    const char *err_msg;
+    int ret = -EINVAL;
 
-    vinfo->maddr_kernel_ccb = INVALID_MFN;
-    vinfo->maddr_kernel_ccb_ctl = INVALID_MFN;
-    vinfo->maddr_firmware_ccb = INVALID_MFN;
-    vinfo->maddr_firmware_ccb_ctl = INVALID_MFN;
-    vinfo->maddr_trace_buf_ctl = INVALID_MFN;
-    vinfo->maddr_power_sync = INVALID_MFN;
-
+    fw_init = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_init_dev_addr, sizeof(*fw_init));
     if ( unlikely(!fw_init) )
     {
-        printk("Cannot map RGXFWIF_INIT\n");
-        return -EFAULT;
+        dev_err(vcoproc->coproc->dev, "cannot map RGXFWIF_INIT\n");
+        return -EINVAL;
     }
-    /* kernel */
-    vinfo->maddr_kernel_ccb = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
-                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCB.ui32Addr));
-    if ( unlikely(vinfo->maddr_kernel_ccb == INVALID_MFN) )
-        goto out;
 
-    vinfo->maddr_kernel_ccb_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
-                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psKernelCCBCtl.ui32Addr));
-    if ( unlikely(vinfo->maddr_kernel_ccb_ctl == INVALID_MFN) )
-        goto out;
+    /* Kernel CCBCtl */
+    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->psKernelCCBCtl.ui32Addr);
+    size = sizeof(*vinfo->fw_kernel_ccb_ctl);
+    vinfo->fw_kernel_ccb_ctl = gx6xxx_fw_mmu_map(vcoproc, vinfo,
+                                                 fw_dev_addr, size);
+    if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb_ctl) )
+    {
+        err_msg = "Kernel CCBCtl";
+        ret = PTR_ERR(vinfo->fw_kernel_ccb_ctl);
+        goto fail;
+    }
+    /* Kernel CCB */
+    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->psKernelCCB.ui32Addr);
+    size = (vinfo->fw_kernel_ccb_ctl->ui32WrapMask + 1) * sizeof(RGXFWIF_KCCB_CMD);
+    vinfo->fw_kernel_ccb = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_dev_addr, size);
+    if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb) )
+    {
+        err_msg = "Kernel CCB";
+        ret = PTR_ERR(vinfo->fw_kernel_ccb);
+        goto fail;
+    }
 
-    /* firmware */
-    vinfo->maddr_firmware_ccb = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
-                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCB.ui32Addr));
-    if ( unlikely(vinfo->maddr_firmware_ccb == INVALID_MFN) )
-        goto out;
+    /* Firmware CCBCtl */
+    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr);
+    size = sizeof(*vinfo->fw_firmware_ccb_ctl);
+    vinfo->fw_firmware_ccb_ctl = gx6xxx_fw_mmu_map(vcoproc, vinfo,
+                                                   fw_dev_addr, size);
+    if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb_ctl) )
+    {
+        err_msg = "Firmware CCBCtl";
+        ret = PTR_ERR(vinfo->fw_firmware_ccb_ctl);
+        goto fail;
+    }
+    /* Firmware CCB */
+    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCB.ui32Addr);
+    size = (vinfo->fw_firmware_ccb_ctl->ui32WrapMask + 1) * sizeof(RGXFWIF_FWCCB_CMD);
+    vinfo->fw_firmware_ccb = gx6xxx_fw_mmu_map(vcoproc, vinfo,
+                                               fw_dev_addr, size);
+    if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb) )
+    {
+        err_msg = "Firmware CCB";
+        ret = PTR_ERR(vinfo->fw_firmware_ccb);
+        goto fail;
+    }
 
-    vinfo->maddr_firmware_ccb_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
-                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr));
-    if ( unlikely(vinfo->maddr_firmware_ccb_ctl == INVALID_MFN) )
-        goto out;
+    /* Trace buffer */
+    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->sTraceBufCtl.ui32Addr);
+    size = sizeof(*vinfo->fw_trace_buf);
+    vinfo->fw_trace_buf = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_dev_addr, size);
+    if ( IS_ERR_OR_NULL(vinfo->fw_trace_buf) )
+    {
+        err_msg = "FW trace buffer";
+        ret = PTR_ERR(vinfo->fw_trace_buf);
+        goto fail;
+    }
 
-    vinfo->maddr_trace_buf_ctl = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
-                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->sTraceBufCtl.ui32Addr));
-    if ( unlikely(vinfo->maddr_trace_buf_ctl == INVALID_MFN) )
-        goto out;
+    /* Power sync object */
+    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->sPowerSync.ui32Addr);
+    size = sizeof(*vinfo->fw_power_sync);
+    vinfo->fw_power_sync = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_dev_addr, size);
+    if ( IS_ERR_OR_NULL((IMG_UINT32 *)vinfo->fw_power_sync) )
+    {
+        err_msg = "PowerSync object";
+        ret = PTR_ERR((IMG_UINT32 *)vinfo->fw_power_sync);
+        goto fail;
+    }
+    gx6xxx_fw_mmu_unmap(fw_init);
+    return 0;
 
-    vinfo->maddr_power_sync = gx6xxx_mmu_devaddr_to_maddr(vcoproc, vinfo,
-                    gx6xxx_mmu_meta_to_dev_vaddr(fw_init->sPowerSync.ui32Addr));
-    if ( unlikely(vinfo->maddr_power_sync == INVALID_MFN) )
-        goto out;
-
-    ret = 0;
-out:
-    gx6xxx_mmu_unmap(fw_init);
+fail:
+    dev_err(vcoproc->coproc->dev, "failed to map %s\n", err_msg);
     return ret;
-}
-
-static void *gx6xxx_fw_map_buf(paddr_t maddr)
-{
-    unsigned char *vaddr;
-
-    if ( unlikely(!maddr) )
-        return 0;
-    /* FIXME: is it ok to map same page twice or more?
-     * this can happen if CCBs are sharing the same page
-     */
-    vaddr = gx6xxx_mmu_map(paddr_to_pfn(maddr));
-    if ( unlikely(!vaddr) )
-        return ERR_PTR(-EFAULT);
-    return vaddr + GX6XXX_MMU_PAGE_OFFSET(maddr);
-}
-
-static void gx6xxx_fw_unmap_buf(void *vaddr)
-{
-    if ( !IS_ERR_OR_NULL(vaddr) )
-        gx6xxx_mmu_unmap((void *)((paddr_t)vaddr & PAGE_MASK));
 }
 
 int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
                    struct vgx6xxx_info *vinfo)
 {
-    const char *err_msg;
-    int ret;
     uint64_t fw_init_dev_addr;
-    uint64_t *fw_cfg, *fw_cfg_last, *ptr;
-    mfn_t mfn_heap_base;
+    uint64_t *fw_cfg, *fw_cfg_last, *fw_heap_base;
+    int ret;
 
     /* RGX_CR_BIF_CAT_BASE0 must be set by this time */
-    mfn_heap_base = gx6xxx_mmu_init(vcoproc, vinfo);
-    if ( mfn_heap_base == INVALID_MFN )
-    {
-        dev_err(vcoproc->coproc->dev, "Failed to initialize GPU MMU for domain %d\n",
-                vcoproc->domain->domain_id);
-        BUG();
-    }
+    ret = gx6xxx_fw_mmu_init(vcoproc, vinfo);
+    /* TODO: need to handle */
+    BUG_ON(ret < 0);
 
-    ptr = gx6xxx_mmu_map(mfn_heap_base);
-    vinfo->mfn_rgx_fwif_init = INVALID_MFN;
-    if ( unlikely(!ptr) )
+    fw_heap_base = gx6xxx_fw_mmu_map(vcoproc, vinfo,
+                                     RGX_FIRMWARE_HEAP_BASE, PAGE_SIZE);
+    if ( unlikely(!fw_heap_base) )
+    {
+        dev_err(vcoproc->coproc->dev,
+                "failed to map at RGX_FIRMWARE_HEAP_BASE\n");
         return -EFAULT;
+    }
     /* skip RGXFW_BOOTLDR_CONF_OFFSET uint32_t values to get
      * to the configuration
      */
-    fw_cfg = ptr;
+    fw_cfg = fw_heap_base;
     /* must not read after this pointer */
-    fw_cfg_last = ptr + PAGE_SIZE/sizeof(*ptr);
+    fw_cfg_last = fw_heap_base + PAGE_SIZE/sizeof(*fw_heap_base);
     fw_cfg += RGXFW_BOOTLDR_CONF_OFFSET / 2;
     /* now skip all non-zero values - those are pairs of register:value
      * used by the firmware during initialization
@@ -379,85 +415,43 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
         continue;
     if ( fw_cfg == fw_cfg_last )
     {
-        dev_err(vcoproc->coproc->dev, "failed to find RGXFWIF_INIT structure\n");
-        return -EINVAL;
+        dev_err(vcoproc->coproc->dev,
+                "failed to find RGXFWIF_INIT structure\n");
+        ret = -EINVAL;
+        goto fail;
     }
     /* right after the terminator (64-bits of zeros) there is a pointer
      * to the RGXFWIF_INIT structure
      */
     /* convert the address from META address space into what MMU sees */
-    fw_init_dev_addr = gx6xxx_mmu_meta_to_dev_vaddr(*((uint32_t *)fw_cfg));
-    gx6xxx_mmu_unmap(ptr);
-    printk("Found RGXFWIF_INIT structure address: %lx\n", fw_init_dev_addr);
-    /* now get its MFN */
-    vinfo->mfn_rgx_fwif_init = gx6xxx_mmu_devaddr_to_mfn(vcoproc, vinfo,
-                                                         fw_init_dev_addr);
-    if ( unlikely(vinfo->mfn_rgx_fwif_init == INVALID_MFN) )
-        return -EFAULT;
-    ret = gx6xxx_fw_parse_init(vcoproc, vinfo);
+    fw_init_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(*((uint32_t *)fw_cfg));
+    dev_dbg(vcoproc->coproc->dev,
+            "found RGXFWIF_INIT structure address: %lx\n", fw_init_dev_addr);
+    ret = gx6xxx_fw_map_all(vcoproc, vinfo, fw_init_dev_addr);
     if ( unlikely(ret < 0) )
         return ret;
-    vinfo->fw_trace_buf = gx6xxx_fw_map_buf(vinfo->maddr_trace_buf_ctl);
-    if ( IS_ERR_OR_NULL(vinfo->fw_trace_buf) )
-    {
-        err_msg = "FW trace buffer";
-        ret = PTR_ERR(vinfo->fw_trace_buf);
-        goto fail;
-    }
-    vinfo->fw_kernel_ccb_ctl = gx6xxx_fw_map_buf(vinfo->maddr_kernel_ccb_ctl);
-    if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb_ctl) )
-    {
-        err_msg = "Kernel CCBCtl";
-        ret = PTR_ERR(vinfo->fw_kernel_ccb_ctl);
-        goto fail;
-    }
-    vinfo->fw_kernel_ccb = gx6xxx_fw_map_buf(vinfo->maddr_kernel_ccb);
-    if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb) )
-    {
-        err_msg = "Kernel CCB";
-        ret = PTR_ERR(vinfo->fw_kernel_ccb);
-        goto fail;
-    }
-    vinfo->fw_firmware_ccb_ctl = gx6xxx_fw_map_buf(vinfo->maddr_firmware_ccb_ctl);
-    if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb_ctl) )
-    {
-        err_msg = "Firmware CCBCtl";
-        ret = PTR_ERR(vinfo->fw_firmware_ccb_ctl);
-        goto fail;
-    }
-    vinfo->fw_firmware_ccb = gx6xxx_fw_map_buf(vinfo->maddr_firmware_ccb);
-    if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb) )
-    {
-        err_msg = "Firmware CCB";
-        ret = PTR_ERR(vinfo->fw_firmware_ccb);
-        goto fail;
-    }
-    vinfo->fw_power_sync = gx6xxx_fw_map_buf(vinfo->maddr_power_sync);
-    if ( IS_ERR_OR_NULL(vinfo->fw_power_sync) )
-    {
-        err_msg = "PowerSync object";
-        ret = PTR_ERR(vinfo->fw_power_sync);
-        goto fail;
-    }
+    gx6xxx_fw_mmu_unmap(fw_heap_base);
     return 0;
 
 fail:
-    dev_err(vcoproc->coproc->dev, "failed to map %s\n", err_msg);
+    gx6xxx_fw_mmu_unmap(fw_heap_base);
     return ret;
 }
 
 void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
                       struct vgx6xxx_info *vinfo)
 {
-    gx6xxx_fw_unmap_buf(vinfo->fw_trace_buf);
-    gx6xxx_fw_unmap_buf(vinfo->fw_kernel_ccb);
-    gx6xxx_fw_unmap_buf(vinfo->fw_kernel_ccb_ctl);
-    gx6xxx_fw_unmap_buf(vinfo->fw_firmware_ccb);
-    gx6xxx_fw_unmap_buf(vinfo->fw_firmware_ccb_ctl);
+    gx6xxx_fw_mmu_unmap(vinfo->fw_trace_buf);
+    gx6xxx_fw_mmu_unmap(vinfo->fw_kernel_ccb);
+    gx6xxx_fw_mmu_unmap(vinfo->fw_kernel_ccb_ctl);
+    gx6xxx_fw_mmu_unmap(vinfo->fw_firmware_ccb);
+    gx6xxx_fw_mmu_unmap(vinfo->fw_firmware_ccb_ctl);
+    gx6xxx_fw_mmu_unmap((IMG_UINT32 *)vinfo->fw_power_sync);
 }
 
 /* get new write offset for Kernel messages to FW */
-void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo)
+void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
+                            struct vgx6xxx_info *vinfo)
 {
     uint32_t wrap_mask, read_ofs, write_ofs;
     const char *cmd_name;
@@ -472,7 +466,7 @@ void gx6xxx_dump_kernel_ccb(struct vgx6xxx_info *vinfo)
 
         if ( read_ofs > wrap_mask || write_ofs > wrap_mask )
         {
-            printk("Stalled messages???\n");
+            dev_err(vcoproc->coproc->dev,"stalled messages???\n");
             return;
         }
 

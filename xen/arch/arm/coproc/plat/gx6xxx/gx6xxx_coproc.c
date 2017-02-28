@@ -374,7 +374,7 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
     {
 #ifdef GX6XXX_DEBUG
         if ( likely(ctx.offset == RGX_CR_MTS_SCHEDULE) )
-            gx6xxx_dump_kernel_ccb(vinfo);
+            gx6xxx_dump_kernel_ccb(ctx.vcoproc, vinfo);
 #endif
         gx6xxx_write32(ctx.coproc, ctx.offset, r);
 

@@ -77,7 +77,7 @@ struct vgx6xxx_info
     RGXFWIF_CCB_CTL *fw_kernel_ccb_ctl;
     IMG_UINT8 *fw_firmware_ccb;
     RGXFWIF_CCB_CTL *fw_firmware_ccb_ctl;
-    IMG_UINT32 *fw_power_sync;
+    volatile IMG_UINT32 *fw_power_sync;
 
     /*
      ***************************************************************************
@@ -130,21 +130,6 @@ struct vgx6xxx_info
     mfn_t mfn_pc;
     /* page directory */
     mfn_t mfn_pd;
-    /* RGXFWIF_INIT structure */
-    mfn_t mfn_rgx_fwif_init;
-
-    /* psKernelCCB */
-    paddr_t maddr_kernel_ccb;
-    /* psKernelCCBCtl */
-    paddr_t maddr_kernel_ccb_ctl;
-    /* psFirmwareCCB */
-    paddr_t maddr_firmware_ccb;
-    /* psFirmwareCCBCtl */
-    paddr_t maddr_firmware_ccb_ctl;
-    /* sTraceBufCtl */
-    paddr_t maddr_trace_buf_ctl;
-    /* sPowerSync */
-    paddr_t maddr_power_sync;
 };
 
 extern bool gx6xxx_debug;
