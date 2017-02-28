@@ -639,7 +639,7 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                vinfo->fw_trace_buf->aui32InterruptCount[0],
                atomic_read(&vinfo->irq_count));
         pow_cmd.eDM = i;
-        ret = gx6xxx_send_kernel_ccb_cmd(vcoproc, vinfo, &pow_cmd, sizeof(pow_cmd));
+        ret = gx6xxx_send_kernel_ccb_cmd(vcoproc, vinfo, &pow_cmd);
         if ( ret < 0)
         {
             dev_err(vcoproc->coproc->dev, "failed to send power off command to FW\n");
