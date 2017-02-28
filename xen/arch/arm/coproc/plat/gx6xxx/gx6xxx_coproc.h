@@ -25,7 +25,6 @@
 
 #include "../../coproc.h"
 #include "../common.h"
-#include "config_kernel.h"
 
 #if 1
 #define GX6XXX_DEBUG 1

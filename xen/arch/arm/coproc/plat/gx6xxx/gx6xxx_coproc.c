@@ -26,8 +26,6 @@
 
 #include "gx6xxx_coproc.h"
 #include "gx6xxx_hexdump.h"
-#include "gx6xxx_mmu.h"
-#include "rgx_meta.h"
 
 #define DT_MATCH_GX6XXX DT_MATCH_COMPATIBLE("renesas,gsx")
 
@@ -214,22 +212,13 @@ static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
     {
         if ( likely(!vinfo->scheduler_started) )
         {
-            mfn_t mfn_heap_base;
             int ret;
 
-            /* RGX_CR_BIF_CAT_BASE0 must be set by this time */
-            mfn_heap_base = gx6xxx_mmu_init(vcoproc, vinfo);
-            if ( mfn_heap_base == INVALID_MFN )
-            {
-                dev_err(vcoproc->coproc->dev, "Failed to initialize GPU MMU for domain %d\n",
-                        vcoproc->domain->domain_id);
-                BUG();
-            }
-            ret = gx6xxx_fw_init(vcoproc, vinfo, mfn_heap_base);
+            ret = gx6xxx_fw_init(vcoproc, vinfo);
             if ( ret < 0 )
             {
-                dev_err(vcoproc->coproc->dev, "Failed to initialize GPU FW for domain %d\n",
-                        vcoproc->domain->domain_id);
+                dev_err(vcoproc->coproc->dev, "Failed to initialize GPU FW for domain %d: %d\n",
+                        vcoproc->domain->domain_id, ret);
                 BUG();
             }
             dev_dbg(vcoproc->coproc->dev, "Domain %d start condition met\n",

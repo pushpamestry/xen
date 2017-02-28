@@ -22,6 +22,9 @@
 
 #include <xen/mm.h>
 
+/* this must be included before any rgx headers */
+#include "config_kernel.h"
+
 #include "rgx_fwif.h"
 #include "rgx_fwif_km.h"
 #include "rgx_meta.h"
@@ -31,7 +34,7 @@ struct vcoproc_instance;
 struct vgx6xxx_info;
 
 int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
-                   struct vgx6xxx_info *vinfo, mfn_t mfn_heap_base);
+                   struct vgx6xxx_info *vinfo);
 
 void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
                       struct vgx6xxx_info *vinfo);
