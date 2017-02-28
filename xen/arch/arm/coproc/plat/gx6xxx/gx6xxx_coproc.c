@@ -440,10 +440,11 @@ static void gx6xxx_irq_handler(int irq, void *dev,
 #endif
         /* Save interrupt status register, so we can deliver to domain later. */
         vinfo->reg_val_irq_status.as.lo = irq_status;
-        if ( likely(vinfo->state != VGX6XXX_STATE_IN_TRANSIT) )
+        if ( likely(vinfo->state == VGX6XXX_STATE_RUNNING) )
             vgic_vcpu_inject_spi(vcoproc->domain, irq);
         else
-            printk("%s VGX6XXX_STATE_IN_TRANSIT\n", __FUNCTION__);
+            printk("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++ Not delivering IRQ in state %s\n",
+                   vgx6xxx_state_to_str(vinfo->state));
 
         printk("FW reports IRQ count %d we have %d\n",
                vinfo->fw_trace_buf->aui32InterruptCount[0],
