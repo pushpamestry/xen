@@ -33,7 +33,7 @@
 
 #define GX6XXX_NUM_IRQ          1
 #define GX6XXX_NUM_MMIO         1
-#define GX6XXX_POLL_TO_US       500
+#define GX6XXX_POLL_TO_US       5000
 
 static const char *vgx6xxx_state_to_str(enum vgx6xxx_state state)
 {
@@ -545,12 +545,12 @@ int gx6xxx_poll_reg32(struct coproc_device *coproc, uint32_t offset,
 
 int gx6xxx_poll_val32(volatile uint32_t *val, uint32_t expected, uint32_t mask)
 {
-    int retry = GX6XXX_POLL_TO_US;
+    int retry = GX6XXX_POLL_TO_US * 10;
 
     gx6xxx_debug = false;
     do
     {
-        if ( (*val & mask)  == expected )
+        if ( (*val & mask) == expected )
         {
             gx6xxx_debug = true;
             return 0;
@@ -609,6 +609,23 @@ static int gx6xxx_write_via_slave_port32(struct coproc_device *coproc,
     return 0;
 }
 
+static const char *power_state_to_str(RGXFWIF_POW_STATE state)
+{
+    switch (state)
+    {
+    case RGXFWIF_POW_OFF:
+        return "RGXFWIF_POW_OFF";
+    case RGXFWIF_POW_ON:
+        return "RGXFWIF_POW_ON";
+    case RGXFWIF_POW_FORCED_IDLE:
+        return "RGXFWIF_POW_FORCED_IDLE";
+    case RGXFWIF_POW_IDLE:
+        return "RGXFWIF_POW_IDLE";
+    default:
+        break;
+    }
+    return "Unknown";
+}
 /* try stopping the GPU: 0 on success, <0 if still busy */
 static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo)
@@ -619,8 +636,9 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
 
     printk("%s GPU stopping =============================================\n",
            __FUNCTION__);
+    printk("%s sPowerState is %s\n", __FUNCTION__, power_state_to_str(vinfo->fw_trace_buf->ePowState));
 
-    vinfo->fw_power_sync[0] = 1;
+    vinfo->fw_power_sync[0] = 0;
 
     pow_cmd.eCmdType = RGXFWIF_KCCB_CMD_POW;
     pow_cmd.uCmdData.sPowData.ePowType = RGXFWIF_POW_OFF_REQ;
@@ -631,7 +649,7 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                vinfo->fw_trace_buf->aui32InterruptCount[0],
                atomic_read(&vinfo->irq_count));
         pow_cmd.eDM = i;
-        ret = gx6xxx_send_kernel_ccb_cmd(vcoproc, vinfo, &pow_cmd);
+        ret = gx6xxx_send_kernel_ccb_cmd(vcoproc, vinfo, &pow_cmd, sizeof(pow_cmd));
         if ( ret < 0)
         {
             dev_err(vcoproc->coproc->dev, "failed to send power off command to FW\n");
@@ -640,8 +658,10 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
     }
 
     ret = gx6xxx_poll_val32(vinfo->fw_power_sync, 0x1, 0xFFFFFFFF);
+    if ( ret < 0 )
+        return ret;
 
-    printk("%s sPowerState is %d\n", __FUNCTION__, vinfo->fw_trace_buf->ePowState);
+    printk("%s sPowerState is %s\n", __FUNCTION__, power_state_to_str(vinfo->fw_trace_buf->ePowState));
     printk("%s FW reports %d vs Xen %d IRQs\n", __FUNCTION__,
            vinfo->fw_trace_buf->aui32InterruptCount[0],
            atomic_read(&vinfo->irq_count));

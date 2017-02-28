@@ -265,15 +265,14 @@ static int gx6xxx_get_kernel_ccb_slot(struct vgx6xxx_info *vinfo,
 
 int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo,
-                               RGXFWIF_KCCB_CMD *cmd)
+                               RGXFWIF_KCCB_CMD *cmd, uint32_t cmd_sz)
 {
-    uint32_t curr_offset, new_offset = 0, cmd_sz, ret;
+    uint32_t curr_offset, new_offset = 0, ret;
 
     curr_offset = vinfo->fw_kernel_ccb_ctl->ui32WriteOffset;
     ret = gx6xxx_get_kernel_ccb_slot(vinfo, &new_offset);
     if ( unlikely(ret < 0) )
         return ret;
-    cmd_sz = vinfo->fw_kernel_ccb_ctl->ui32CmdSize;
     memcpy(&vinfo->fw_firmware_ccb[curr_offset * cmd_sz], cmd, cmd_sz);
     smp_wmb();
     vinfo->fw_kernel_ccb_ctl->ui32WriteOffset = new_offset;
