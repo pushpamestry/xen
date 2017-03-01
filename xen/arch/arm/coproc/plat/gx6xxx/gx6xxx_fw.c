@@ -151,46 +151,38 @@ static inline void *gx6xxx_fw_mmu_map(struct vcoproc_instance *vcoproc,
     /* FIXME: up to 3 pages can be mapped */
     mfn_t mfn[3];
     unsigned char *vaddr;
-    size_t map_sz, left_sz;
     uint32_t offset;
-    uint64_t fw_meta_dev_vaddr, cur_dev_addr;
-    int i;
+    uint64_t fw_meta_dev_vaddr;
+    int i, nr;
 
     fw_meta_dev_vaddr = (meta_addr & ~RGXFW_SEGMMU_DATA_CACHE_MASK) +
                 RGX_FIRMWARE_HEAP_BASE;
-
-    dev_dbg(vcoproc->coproc->dev, "mapping dev address %lx (%x), size %zu\n",
-            fw_meta_dev_vaddr, meta_addr, size);
-    /* TODO: we only map buffers less than 2 pages for now */
-    BUG_ON(size > PAGE_SIZE * 2);
-
-    cur_dev_addr = fw_meta_dev_vaddr & PAGE_MASK;
     offset = fw_meta_dev_vaddr & (PAGE_SIZE - 1);
-    map_sz = offset + size <= PAGE_SIZE ? size : PAGE_SIZE - offset;
-    left_sz = size;
-    for (i = 0; i < ARRAY_SIZE(mfn); i++)
+    /* number of pages this mapping will use */
+    nr = PFN_UP(offset + size);
+    dev_dbg(vcoproc->coproc->dev, "mapping dev address %lx (%x), size %zu, nr %d\n",
+            fw_meta_dev_vaddr, meta_addr, size, nr);
+    BUG_ON(nr > ARRAY_SIZE(mfn));
+
+    for (i = 0; i < nr; i++)
     {
         /* this mapping fits into a single page */
-        mfn[i] = gx6xxx_fw_mmu_devaddr_to_mfn(vcoproc, vinfo, cur_dev_addr);
+        mfn[i] = gx6xxx_fw_mmu_devaddr_to_mfn(vcoproc, vinfo,
+                                              fw_meta_dev_vaddr);
         if ( unlikely(mfn[i] == INVALID_MFN) )
         {
             dev_err(vcoproc->coproc->dev,
                     "failed to find MFN for dev address %lx\n",
-                    cur_dev_addr);
+                    fw_meta_dev_vaddr);
             return ERR_PTR(-EINVAL);
         }
-        left_sz -= map_sz;
-        if ( !left_sz )
-            break;
-        cur_dev_addr += PAGE_SIZE;
-        map_sz = left_sz <= PAGE_SIZE ? left_sz : PAGE_SIZE;
+        fw_meta_dev_vaddr += PAGE_SIZE;
     }
-    vaddr = __vmap(mfn, PFN_UP(offset + size), 1, 1,
-                   PAGE_HYPERVISOR_NOCACHE, VMAP_DEFAULT);
+    vaddr = __vmap(mfn, 1, nr, 1, PAGE_HYPERVISOR_NOCACHE, VMAP_DEFAULT);
     if ( unlikely(!vaddr) )
     {
         dev_err(vcoproc->coproc->dev,
-                "failed to map for dev address %lx\n", fw_meta_dev_vaddr);
+                "failed to map META address %x\n", meta_addr);
         return ERR_PTR(-EINVAL);
     }
     return vaddr + offset;
