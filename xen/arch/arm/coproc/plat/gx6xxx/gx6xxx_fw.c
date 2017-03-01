@@ -473,7 +473,7 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
             break;
         case RGXFWIF_KCCB_CMD_SYNC:
             cmd_name = "RGXFWIF_KCCB_CMD_SYNC";
-            printk("RGXFWIF_KCCB_CMD_SYNC %x uiUpdateVal %d\n",
+            dev_dbg(vcoproc->coproc->dev, "RGXFWIF_KCCB_CMD_SYNC %x uiUpdateVal %d\n",
                    cmd->uCmdData.sSyncData.sSyncObjDevVAddr.ui32Addr,
                    cmd->uCmdData.sSyncData.uiUpdateVal);
             break;
@@ -491,7 +491,7 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
                    cmd->eCmdType, read_ofs);
             BUG();
         }
-        printk("KCCB cmd: %s (%d)\n", cmd_name, cmd->eCmdType);
+        dev_dbg(vcoproc->coproc->dev, "KCCB cmd: %s (%d)\n", cmd_name, cmd->eCmdType);
         read_ofs = (read_ofs + 1) & wrap_mask;
     }
 }
