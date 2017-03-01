@@ -9,9 +9,9 @@
 #include "gx6xxx_hexdump.h"
 
 /* this is the time out to wait for the firmware to consume
- * a command sent from the kernel
+ * a command sent from Xen via the kernel's CCB
  */
-#define GX6XXX_WAIT_FW_TO_US    500
+#define GX6XXX_WAIT_FW_TO_US    100
 
 #define RGXFW_SEGMMU_DATA_CACHE_MASK    (RGXFW_SEGMMU_DATA_BASE_ADDRESS     | \
                                          RGXFW_SEGMMU_DATA_META_CACHED      | \
@@ -496,7 +496,8 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
     }
 }
 
-/* FIXME:
+/* FIXME: rats nest for races...
+ *
  * In order to send a command to the FW we use Kernel CCB buffer
  * If kernel needs to send a command it increases ui32WriteOffset,
  * then FW advances ui32ReadOffset when it fetches the command.
@@ -506,6 +507,10 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
  *  - if we use ui32ReadOffset, given we are blocking command scheduling
  *    from kernel to FW, FW will not touch ui32ReadOffset, but kernel
  *    may read it.
+ *  - when sending multiple commands FW may save a pointer to the command's
+ *    data for later use, so even if number of commands reported as executed
+ *    and/or read offset advanced this doesn't mean we can re-use the same
+ *    slot now
  * No race solution: trap memory access to the r/w offsets, but if driver
  * reloads then the corresponding addresses of the control buffers may change
  * and at the moment there is no possibility to de-register MMIO handler.
@@ -518,7 +523,7 @@ int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
 {
     uint32_t first_cmd_offset, cmd_offset;
     RGXFWIF_KCCB_CMD *kccb = (RGXFWIF_KCCB_CMD *)vinfo->fw_kernel_ccb;
-    int i, ret, to_us = GX6XXX_WAIT_FW_TO_US;
+    int i, to_us = GX6XXX_WAIT_FW_TO_US;
 
     cmd_offset = (vinfo->fw_kernel_ccb_ctl->ui32ReadOffset - nr) &
                  vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
@@ -534,22 +539,12 @@ int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
     for (i = 0; i < nr; i++)
         gx6xxx_write32(vcoproc->coproc, RGX_CR_MTS_SCHEDULE,
                        RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
-    ret = -ETIMEDOUT;
-    do
+    while ( (vinfo->fw_kernel_ccb_ctl->ui32ReadOffset != cmd_offset) && to_us-- )
     {
-        if ( vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == cmd_offset )
-        {
-            dev_dbg(vcoproc->coproc->dev,
-                    "command(s) consumed by FW, ui32ReadOffset %d ui32WriteOffset %d\n",
-                    vinfo->fw_kernel_ccb_ctl->ui32ReadOffset,
-                    vinfo->fw_kernel_ccb_ctl->ui32WriteOffset);
-            ret = 0;
-            break;
-        }
         cpu_relax();
         udelay(1);
-    } while (to_us--);
+    };
     dev_dbg(vcoproc->coproc->dev, "ui32KCCBCmdsExecuted %d\n",
             vinfo->fw_trace_buf->ui32KCCBCmdsExecuted);
-    return ret;
+    return vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == cmd_offset ? 0 : -ETIMEDOUT;
 }
