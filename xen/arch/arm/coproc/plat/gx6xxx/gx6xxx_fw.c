@@ -514,29 +514,36 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
  */
 int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo,
-                               RGXFWIF_KCCB_CMD *cmd)
+                               RGXFWIF_KCCB_CMD *cmd, int nr)
 {
-    uint32_t curr_offset, cmd_offset;
+    uint32_t first_cmd_offset, cmd_offset;
     RGXFWIF_KCCB_CMD *kccb = (RGXFWIF_KCCB_CMD *)vinfo->fw_kernel_ccb;
-    int to_us = GX6XXX_WAIT_FW_TO_US;
+    int i, ret, to_us = GX6XXX_WAIT_FW_TO_US;
 
-    curr_offset = vinfo->fw_kernel_ccb_ctl->ui32ReadOffset;
-    cmd_offset = (curr_offset - 1) & vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
+    cmd_offset = (vinfo->fw_kernel_ccb_ctl->ui32ReadOffset - nr) &
+                 vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
+    first_cmd_offset = cmd_offset;
     dev_dbg(vcoproc->coproc->dev,
-            "writing command at offset %d, expecting ui32ReadOffset %d ui32WriteOffset %d\n",
-            cmd_offset, curr_offset, vinfo->fw_kernel_ccb_ctl->ui32WriteOffset);
-    kccb[cmd_offset] = *cmd;
-    vinfo->fw_kernel_ccb_ctl->ui32ReadOffset = cmd_offset;
-    gx6xxx_write32(vcoproc->coproc, RGX_CR_MTS_SCHEDULE,
-                   RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
+            "writing %d command(s) at offset %d\n", nr, cmd_offset);
+    for (i = 0; i < nr; i++)
+    {
+        kccb[cmd_offset] = cmd[i];
+        cmd_offset = (cmd_offset + 1) & vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
+    }
+    vinfo->fw_kernel_ccb_ctl->ui32ReadOffset = first_cmd_offset;
+    for (i = 0; i < nr; i++)
+        gx6xxx_write32(vcoproc->coproc, RGX_CR_MTS_SCHEDULE,
+                       RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
+    ret = -ETIMEDOUT;
     do
     {
-        if ( vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == curr_offset )
+        if ( vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == cmd_offset )
         {
             dev_dbg(vcoproc->coproc->dev,
-                    "command consumed by FW, ui32ReadOffset %d ui32WriteOffset %d\n",
+                    "command(s) consumed by FW, ui32ReadOffset %d ui32WriteOffset %d\n",
                     vinfo->fw_kernel_ccb_ctl->ui32ReadOffset,
                     vinfo->fw_kernel_ccb_ctl->ui32WriteOffset);
+            ret = 0;
             break;
         }
         cpu_relax();
@@ -544,5 +551,5 @@ int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
     } while (to_us--);
     dev_dbg(vcoproc->coproc->dev, "ui32KCCBCmdsExecuted %d\n",
             vinfo->fw_trace_buf->ui32KCCBCmdsExecuted);
-    return 0;
+    return ret;
 }
