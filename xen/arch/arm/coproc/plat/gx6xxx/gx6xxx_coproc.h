@@ -26,10 +26,6 @@
 #include "../../coproc.h"
 #include "../common.h"
 
-#if 1
-#define GX6XXX_DEBUG 1
-#endif
-
 #include "gx6xxx_fw.h"
 
 enum vgx6xxx_state
