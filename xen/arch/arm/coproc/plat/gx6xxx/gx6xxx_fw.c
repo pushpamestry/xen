@@ -517,6 +517,7 @@ int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
                                RGXFWIF_KCCB_CMD *cmd)
 {
     uint32_t curr_offset, cmd_offset;
+    RGXFWIF_KCCB_CMD *kccb = (RGXFWIF_KCCB_CMD *)vinfo->fw_kernel_ccb;
     int to_us = GX6XXX_WAIT_FW_TO_US;
 
     curr_offset = vinfo->fw_kernel_ccb_ctl->ui32ReadOffset;
@@ -524,8 +525,7 @@ int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
     dev_dbg(vcoproc->coproc->dev,
             "writing command at offset %d, expecting ui32ReadOffset %d ui32WriteOffset %d\n",
             cmd_offset, curr_offset, vinfo->fw_kernel_ccb_ctl->ui32WriteOffset);
-    memcpy(&vinfo->fw_firmware_ccb[cmd_offset * sizeof(RGXFWIF_KCCB_CMD)],
-           cmd, sizeof(RGXFWIF_KCCB_CMD));
+    kccb[cmd_offset] = *cmd;
     vinfo->fw_kernel_ccb_ctl->ui32ReadOffset = cmd_offset;
     gx6xxx_write32(vcoproc->coproc, RGX_CR_MTS_SCHEDULE,
                    RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
