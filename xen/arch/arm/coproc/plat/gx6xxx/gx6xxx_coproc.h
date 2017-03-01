@@ -128,8 +128,6 @@ struct vgx6xxx_info
     mfn_t mfn_pd;
 };
 
-extern bool gx6xxx_debug;
-
 #ifdef GX6XXX_DEBUG
 void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val);
 #else

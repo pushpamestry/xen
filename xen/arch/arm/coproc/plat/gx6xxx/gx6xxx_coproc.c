@@ -839,7 +839,8 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)curr->priv;
     struct coproc_device *coproc = curr->coproc;
-    s_time_t wait_time = 0;
+    s_time_t wait_time;
+    int ret;
     unsigned long flags;
 
     printk("%s dom %d\n", __FUNCTION__, curr->domain->domain_id);
@@ -848,50 +849,26 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
         return 0;
 #endif
     spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
-    if ( vinfo->state == VGX6XXX_STATE_RUNNING )
+    if ( unlikely(vinfo->state == VGX6XXX_STATE_RUNNING) )
     {
-        int ret;
-
-        /* FIXME: go into waiting state now, so from now on all read/write
-         * operations do not reach HW
+        /* FIXME: be pessimistic and go into "in transit" state now,
+         * so from now on all read/write operations do not reach HW
          */
-        gx6xxx_set_state(curr, VGX6XXX_STATE_WAITING);
-        /* try stopping the GPU */
-        /* FIXME: let late interrupts a chance to fire */
-        spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
-        ret = gx6xxx_ctx_gpu_stop(curr, vinfo);
-        spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
-        if ( ret < 0 )
-        {
-            wait_time = MILLISECS(1);
-            gx6xxx_set_state(curr, VGX6XXX_STATE_IN_TRANSIT);
-            goto out;
-        }
+        gx6xxx_set_state(curr, VGX6XXX_STATE_IN_TRANSIT);
     }
-    else if ( vinfo->state == VGX6XXX_STATE_IN_TRANSIT )
-    {
-        int ret;
-
-        /* try stopping the GPU harder */
-        /* FIXME: let late interrupts a chance to fire */
-        spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
-        ret = gx6xxx_ctx_gpu_stop(curr, vinfo);
-        spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
-        if ( ret < 0 )
-        {
-            wait_time = MILLISECS(1);
-            goto out;
-        }
-        gx6xxx_set_state(curr, VGX6XXX_STATE_WAITING);
-    }
+    wait_time = 0;
+    /* try stopping the GPU */
+    spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
+    ret = gx6xxx_ctx_gpu_stop(curr, vinfo);
+    spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
+    if ( ret < 0 )
+        wait_time = MILLISECS(1);
     else
-    {
-        gx6xxx_set_state(curr, vinfo->state);
-        BUG();
-    }
-out:
+        /* we are lucky */
+        gx6xxx_set_state(curr, VGX6XXX_STATE_WAITING);
     spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
     return wait_time;
+
 }
 
 static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
