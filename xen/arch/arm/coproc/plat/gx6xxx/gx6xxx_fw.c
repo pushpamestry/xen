@@ -138,12 +138,6 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     return mfn;
 }
 
-static inline uint64_t gx6xxx_fw_mmu_meta_to_dev_vaddr(uint32_t meta_addr)
-{
-    return (meta_addr & ~RGXFW_SEGMMU_DATA_CACHE_MASK) +
-            RGX_FIRMWARE_HEAP_BASE;
-}
-
 /* N.B. Kernel driver allocates structures shared with the FW from a
  * contigous heap. Thus, there is no guarantee that what we map is
  * PAGE_SIZE aligned. What is more, even 8-byte structure can be
@@ -152,23 +146,26 @@ static inline uint64_t gx6xxx_fw_mmu_meta_to_dev_vaddr(uint32_t meta_addr)
  */
 static inline void *gx6xxx_fw_mmu_map(struct vcoproc_instance *vcoproc,
                                       struct vgx6xxx_info *vinfo,
-                                      uint64_t fw_dev_addr, size_t size)
+                                      uint32_t meta_addr, size_t size)
 {
     /* FIXME: up to 3 pages can be mapped */
     mfn_t mfn[3];
     unsigned char *vaddr;
     size_t map_sz, left_sz;
     uint32_t offset;
-    uint64_t cur_dev_addr;
+    uint64_t fw_meta_dev_vaddr, cur_dev_addr;
     int i;
 
-    dev_dbg(vcoproc->coproc->dev, "mapping dev address %lx, size %zu\n",
-            fw_dev_addr, size);
+    fw_meta_dev_vaddr = (meta_addr & ~RGXFW_SEGMMU_DATA_CACHE_MASK) +
+                RGX_FIRMWARE_HEAP_BASE;
+
+    dev_dbg(vcoproc->coproc->dev, "mapping dev address %lx (%x), size %zu\n",
+            fw_meta_dev_vaddr, meta_addr, size);
     /* TODO: we only map buffers less than 2 pages for now */
     BUG_ON(size > PAGE_SIZE * 2);
 
-    cur_dev_addr = fw_dev_addr & PAGE_MASK;
-    offset = fw_dev_addr & (PAGE_SIZE - 1);
+    cur_dev_addr = fw_meta_dev_vaddr & PAGE_MASK;
+    offset = fw_meta_dev_vaddr & (PAGE_SIZE - 1);
     map_sz = offset + size <= PAGE_SIZE ? size : PAGE_SIZE - offset;
     left_sz = size;
     for (i = 0; i < ARRAY_SIZE(mfn); i++)
@@ -193,7 +190,7 @@ static inline void *gx6xxx_fw_mmu_map(struct vcoproc_instance *vcoproc,
     if ( unlikely(!vaddr) )
     {
         dev_err(vcoproc->coproc->dev,
-                "failed to map for dev address %lx\n", fw_dev_addr);
+                "failed to map for dev address %lx\n", fw_meta_dev_vaddr);
         return ERR_PTR(-EINVAL);
     }
     return vaddr + offset;
@@ -292,10 +289,9 @@ static int gx6xxx_fw_mmu_init(struct vcoproc_instance *vcoproc,
 
 static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
                              struct vgx6xxx_info *vinfo,
-                             uint64_t fw_init_dev_addr)
+                             uint32_t fw_init_dev_addr)
 {
     RGXFWIF_INIT *fw_init;
-    uint64_t fw_dev_addr;
     size_t size;
     const char *err_msg;
     int ret = -EINVAL;
@@ -308,10 +304,10 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     }
 
     /* Kernel CCBCtl */
-    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->psKernelCCBCtl.ui32Addr);
     size = sizeof(*vinfo->fw_kernel_ccb_ctl);
     vinfo->fw_kernel_ccb_ctl = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                                 fw_dev_addr, size);
+                                                 fw_init->psKernelCCBCtl.ui32Addr,
+                                                 size);
     if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb_ctl) )
     {
         err_msg = "Kernel CCBCtl";
@@ -319,9 +315,10 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
         goto fail;
     }
     /* Kernel CCB */
-    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->psKernelCCB.ui32Addr);
     size = (vinfo->fw_kernel_ccb_ctl->ui32WrapMask + 1) * sizeof(RGXFWIF_KCCB_CMD);
-    vinfo->fw_kernel_ccb = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_dev_addr, size);
+    vinfo->fw_kernel_ccb = gx6xxx_fw_mmu_map(vcoproc, vinfo,
+                                             fw_init->psKernelCCB.ui32Addr,
+                                             size);
     if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb) )
     {
         err_msg = "Kernel CCB";
@@ -330,10 +327,10 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     }
 
     /* Firmware CCBCtl */
-    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCBCtl.ui32Addr);
     size = sizeof(*vinfo->fw_firmware_ccb_ctl);
     vinfo->fw_firmware_ccb_ctl = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                                   fw_dev_addr, size);
+                                                   fw_init->psFirmwareCCBCtl.ui32Addr,
+                                                   size);
     if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb_ctl) )
     {
         err_msg = "Firmware CCBCtl";
@@ -341,10 +338,10 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
         goto fail;
     }
     /* Firmware CCB */
-    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->psFirmwareCCB.ui32Addr);
     size = (vinfo->fw_firmware_ccb_ctl->ui32WrapMask + 1) * sizeof(RGXFWIF_FWCCB_CMD);
     vinfo->fw_firmware_ccb = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                               fw_dev_addr, size);
+                                               fw_init->psFirmwareCCB.ui32Addr,
+                                               size);
     if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb) )
     {
         err_msg = "Firmware CCB";
@@ -353,9 +350,10 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     }
 
     /* Trace buffer */
-    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->sTraceBufCtl.ui32Addr);
     size = sizeof(*vinfo->fw_trace_buf);
-    vinfo->fw_trace_buf = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_dev_addr, size);
+    vinfo->fw_trace_buf = gx6xxx_fw_mmu_map(vcoproc, vinfo,
+                                            fw_init->sTraceBufCtl.ui32Addr,
+                                            size);
     if ( IS_ERR_OR_NULL(vinfo->fw_trace_buf) )
     {
         err_msg = "FW trace buffer";
@@ -364,9 +362,10 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     }
 
     /* Power sync object */
-    fw_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(fw_init->sPowerSync.ui32Addr);
     size = sizeof(*vinfo->fw_power_sync);
-    vinfo->fw_power_sync = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_dev_addr, size);
+    vinfo->fw_power_sync = gx6xxx_fw_mmu_map(vcoproc, vinfo,
+                                             fw_init->sPowerSync.ui32Addr,
+                                             size);
     if ( IS_ERR_OR_NULL((IMG_UINT32 *)vinfo->fw_power_sync) )
     {
         err_msg = "PowerSync object";
@@ -384,7 +383,7 @@ fail:
 int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
                    struct vgx6xxx_info *vinfo)
 {
-    uint64_t fw_init_dev_addr;
+    uint32_t fw_init_dev_addr;
     uint64_t *fw_cfg, *fw_cfg_last, *fw_heap_base;
     int ret;
 
@@ -394,7 +393,7 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
     BUG_ON(ret < 0);
 
     fw_heap_base = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                     RGX_FIRMWARE_HEAP_BASE, PAGE_SIZE);
+                                     0, PAGE_SIZE);
     if ( unlikely(!fw_heap_base) )
     {
         dev_err(vcoproc->coproc->dev,
@@ -424,9 +423,9 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
      * to the RGXFWIF_INIT structure
      */
     /* convert the address from META address space into what MMU sees */
-    fw_init_dev_addr = gx6xxx_fw_mmu_meta_to_dev_vaddr(*((uint32_t *)fw_cfg));
+    fw_init_dev_addr = *((uint32_t *)fw_cfg);
     dev_dbg(vcoproc->coproc->dev,
-            "found RGXFWIF_INIT structure address: %lx\n", fw_init_dev_addr);
+            "found RGXFWIF_INIT structure address: %x\n", fw_init_dev_addr);
     ret = gx6xxx_fw_map_all(vcoproc, vinfo, fw_init_dev_addr);
     if ( unlikely(ret < 0) )
         return ret;
