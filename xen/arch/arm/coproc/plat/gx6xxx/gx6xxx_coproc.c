@@ -616,6 +616,50 @@ static const char *power_state_to_str(RGXFWIF_POW_STATE state)
     }
     return "Unknown";
 }
+
+static int gx6xxx_force_idle(struct vcoproc_instance *vcoproc,
+                             struct vgx6xxx_info *vinfo)
+{
+    RGXFWIF_KCCB_CMD pow_cmd;
+    int ret, retry = 10;
+
+    if ( unlikely((vinfo->fw_trace_buf->ePowState == RGXFWIF_POW_FORCED_IDLE) ||
+                  (vinfo->fw_trace_buf->ePowState == RGXFWIF_POW_OFF)) )
+        return 0;
+
+    vinfo->fw_power_sync[0] = 0;
+
+    pow_cmd.eDM = RGXFWIF_DM_GP;
+    pow_cmd.eCmdType = RGXFWIF_KCCB_CMD_POW;
+    pow_cmd.uCmdData.sPowData.ePowType = RGXFWIF_POW_FORCED_IDLE_REQ;
+    pow_cmd.uCmdData.sPowData.uPoweReqData.bCancelForcedIdle = IMG_FALSE;
+
+    dev_dbg(vcoproc->coproc->dev, "sending forced idle command\n");
+
+    ret = gx6xxx_send_kernel_ccb_cmd(vcoproc, vinfo, &pow_cmd);
+    if ( unlikely(ret < 0) )
+        return ret;
+
+    /* wait for GPU to finish current workload */
+    do
+    {
+        ret = gx6xxx_poll_val32(vinfo->fw_power_sync, 0x1, 0xFFFFFFFF);
+        if ( ret < 0 )
+            continue;
+    } while (retry--);
+
+    if ( ret < 0 )
+        return ret;
+
+    /* last check */
+    if ( unlikely(vinfo->fw_trace_buf->ePowState != RGXFWIF_POW_FORCED_IDLE) )
+    {
+        dev_dbg(vcoproc->coproc->dev,"failed to force IDLE\n");
+        return -EAGAIN;
+    }
+    return 0;
+}
+
 /* try stopping the GPU: 0 on success, <0 if still busy */
 static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo)
@@ -628,11 +672,15 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
            __FUNCTION__);
     printk("%s sPowerState is %s\n", __FUNCTION__, power_state_to_str(vinfo->fw_trace_buf->ePowState));
 
+    ret = gx6xxx_force_idle(vcoproc, vinfo);
+    if ( unlikely(ret < 0) )
+        return ret;
+
     vinfo->fw_power_sync[0] = 0;
 
     pow_cmd.eCmdType = RGXFWIF_KCCB_CMD_POW;
     pow_cmd.uCmdData.sPowData.ePowType = RGXFWIF_POW_OFF_REQ;
-    pow_cmd.uCmdData.sPowData.uPoweReqData.bForced = false;
+    pow_cmd.uCmdData.sPowData.uPoweReqData.bForced = IMG_FALSE;
     for (i = 0; i < RGXFWIF_DM_MAX; i++)
     {
         printk("%s FW reports %d vs Xen %d IRQs\n", __FUNCTION__,
