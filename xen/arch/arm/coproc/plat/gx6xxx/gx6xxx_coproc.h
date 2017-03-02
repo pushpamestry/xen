@@ -52,6 +52,14 @@ union reg64_t
     uint64_t val;
 };
 
+struct vgx6xxx_ctx
+{
+    /* number of the registers in context */
+    int count;
+    /* saved registers */
+    union reg64_t *regs;
+};
+
 struct vgx6xxx_info
 {
     /* current state of the vcoproc */
@@ -81,6 +89,9 @@ struct vgx6xxx_info
      *                           REGISTERS
      ***************************************************************************
      */
+    /* this is the register's context */
+    struct vgx6xxx_ctx reg_ctx;
+
     /* This is the current IRQ status register value reported/updated
      * to/from domains. Set on real IRQ from GPU, low 32-bits
      */

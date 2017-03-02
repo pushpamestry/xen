@@ -257,6 +257,12 @@ void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
     case RGX_CR_SLC_STATUS1 + 4:
         name = "RGX_CR_SLC_STATUS1 HI";
         break;
+    case RGX_CR_CLK_CTRL:
+        name = "RGX_CR_CLK_CTRL LO";
+        break;
+    case RGX_CR_CLK_CTRL + 4:
+        name = "RGX_CR_CLK_CTRL HI";
+        break;
     default:
         name = "??";
         printk("Unknown register %08x\n", reg);
@@ -697,6 +703,43 @@ static inline int gx6xxx_wait_fw_started(struct vcoproc_instance *vcoproc,
     return ret;
 }
 
+static void gx6xxx_save_reg_ctx(struct vcoproc_instance *vcoproc,
+                                struct vgx6xxx_info *vinfo)
+{
+    uint32_t offset;
+    int i;
+    bool old_gx6xxx_debug;
+
+    old_gx6xxx_debug = gx6xxx_debug;
+    gx6xxx_debug = false;
+    for (i = 0, offset = 0; i < vinfo->reg_ctx.count;
+         i++, offset += sizeof(*vinfo->reg_ctx.regs))
+    {
+        vinfo->reg_ctx.regs[i].val = gx6xxx_read64(vcoproc->coproc, offset);
+        gx6xxx_write64(vcoproc->coproc, offset, 0);
+    }
+    gx6xxx_debug = old_gx6xxx_debug;
+}
+
+static void gx6xxx_restore_reg_ctx(struct vcoproc_instance *vcoproc,
+                                   struct vgx6xxx_info *vinfo)
+{
+    uint32_t offset;
+    int i;
+    bool old_gx6xxx_debug;
+
+    old_gx6xxx_debug = gx6xxx_debug;
+    gx6xxx_debug = false;
+    for (i = 0, offset = 0; i < vinfo->reg_ctx.count;
+         i++, offset += sizeof(*vinfo->reg_ctx.regs))
+        gx6xxx_write64(vcoproc->coproc, i * sizeof(*vinfo->reg_ctx.regs),
+                       vinfo->reg_ctx.regs[i].val);
+    gx6xxx_debug = old_gx6xxx_debug;
+
+    /* force all clocks on */
+    gx6xxx_write64(vcoproc->coproc, RGX_CR_CLK_CTRL, RGX_CR_CLK_CTRL_ALL_ON);
+}
+
 #define RGX_CR_SOFT_RESET_ALL   (RGX_CR_SOFT_RESET_MASKFULL)
 
 static int gx6xxx_ctx_gpu_start(struct vcoproc_instance *vcoproc,
@@ -704,6 +747,8 @@ static int gx6xxx_ctx_gpu_start(struct vcoproc_instance *vcoproc,
 {
     struct coproc_device *coproc = vcoproc->coproc;
     int ret;
+
+    gx6xxx_restore_reg_ctx(vcoproc, vinfo);
 
     /* perform soft-reset */
     gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, RGX_CR_SOFT_RESET_ALL);
@@ -843,6 +888,7 @@ static int gx6xxx_request_power_off(struct vcoproc_instance *vcoproc,
         ret = gx6xxx_poll_val32(vinfo->fw_power_sync, 0x1, 0xFFFFFFFF);
         if ( ret < 0 )
             return ret;
+        gx6xxx_save_reg_ctx(vcoproc,vinfo);
         gx6xxx_set_state(vcoproc->coproc, GX6XXX_POWER_OFF_DONE);
     }
     return 0;
@@ -1203,6 +1249,7 @@ static int gx6xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
 {
     struct mmio *mmio = &vcoproc->coproc->mmios[0];
     struct vgx6xxx_info *vinfo;
+    int ret;
 
     vcoproc->priv = xzalloc(struct vgx6xxx_info);
     if ( !vcoproc->priv )
@@ -1217,10 +1264,28 @@ static int gx6xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
 
     vinfo->reg_val_cr_soft_reset.val = (uint64_t)-1;
 
+    vinfo->reg_ctx.count = DIV_ROUND_UP(mmio->size, sizeof(*vinfo->reg_ctx.regs));
+    dev_dbg(vcoproc->coproc->dev,
+            "allocating register context for %d registers\n",
+            vinfo->reg_ctx.count);
+    vinfo->reg_ctx.regs = (union reg64_t *)xzalloc_array(struct vgx6xxx_ctx,
+                    vinfo->reg_ctx.count);
+    if ( !vinfo->reg_ctx.regs )
+    {
+        dev_err(vcoproc->coproc->dev,
+                        "failed to allocate vcoproc register context buffer\n");
+        ret = -ENOMEM;
+        goto fail;
+    }
     register_mmio_handler(vcoproc->domain, &gx6xxx_mmio_handler,
                           mmio->addr, mmio->size, mmio);
 
     return 0;
+
+fail:
+    xfree(vcoproc->priv);
+    vcoproc->priv = NULL;
+    return ret;
 }
 
 static void gx6xxx_vcoproc_deinit(struct vcoproc_instance *vcoproc)
@@ -1228,6 +1293,7 @@ static void gx6xxx_vcoproc_deinit(struct vcoproc_instance *vcoproc)
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
     gx6xxx_fw_deinit(vcoproc, vinfo);
+    xfree(vinfo->reg_ctx.regs);
     xfree(vcoproc->priv);
 }
 
