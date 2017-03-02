@@ -142,7 +142,7 @@ static inline void vgx6xxx_set_state(struct vcoproc_instance *vcoproc,
     vinfo->state = state;
 }
 
-bool gx6xxx_debug = false;
+bool gx6xxx_debug = true;
 
 #ifdef GX6XXX_DEBUG
 void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
