@@ -495,14 +495,12 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     struct coproc_device *coproc = dev;
     struct gx6xxx_info *info = (struct gx6xxx_info *)coproc->priv;
     uint32_t irq_status;
-    unsigned long flags;
 
 #if 1
     dev_dbg(coproc->dev, "> %s dom %d\n",
             __FUNCTION__, info->curr->domain->domain_id);
 #endif
 
-    spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
 #if 1
     irq_status = readl(info->reg_vaddr_irq_status);
 #else
@@ -512,12 +510,14 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     {
         struct vcoproc_instance *vcoproc = info->curr;
         struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+        unsigned long flags;
 
 #if 1
         writel(RGXFW_CR_IRQ_CLEAR_MASK, info->reg_vaddr_irq_clear);
 #else
         gx6xxx_write32(coproc, RGXFW_CR_IRQ_STATUS, RGXFW_CR_IRQ_CLEAR_MASK);
 #endif
+        spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
         /* Save interrupt status register, so we can deliver to domain later. */
         vinfo->reg_val_irq_status.as.lo = irq_status;
         if ( likely(vinfo->state != VGX6XXX_STATE_WAITING) )
@@ -535,8 +535,8 @@ static void gx6xxx_irq_handler(int irq, void *dev,
          */
         atomic_set(&vinfo->irq_count,
                    vinfo->fw_trace_buf->aui32InterruptCount[0]);
+        spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
     }
-    spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
 #if 1
     dev_dbg(coproc->dev, "< %s dom %d\n",
             __FUNCTION__, info->curr->domain->domain_id);
