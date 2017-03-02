@@ -56,6 +56,8 @@ enum gx6xxx_state
     GX6XXX_CAN_STOP_THREADS,
     /* wait for all the rest is idle */
     GX6XXX_WAIT_ALL_IDLE,
+    /* wait for the firmware to set started flag to FALSE */
+    GX6XXX_WAIT_FIRMWARE_NOT_STARTED,
 };
 #define GX6XXX_GPU_STATE_DEFAULT GX6XXX_POWER_OFF
 
@@ -94,6 +96,8 @@ static const char *gx6xxx_state_to_str(enum gx6xxx_state state)
         return "CAN_STOP_THREADS";
     case GX6XXX_WAIT_ALL_IDLE:
         return "WAIT_ALL_IDLE";
+    case GX6XXX_WAIT_FIRMWARE_NOT_STARTED:
+        return "WAIT_FIRMWARE_NOT_STARTED";
     default:
         return "-=UNKNOWN=-";
     }
@@ -541,46 +545,6 @@ static const struct mmio_handler_ops gx6xxx_mmio_handler = {
     .write = gx6xxx_mmio_write,
 };
 
-#define RGX_CR_SOFT_RESET_ALL   (RGX_CR_SOFT_RESET_MASKFULL)
-
-static int gx6xxx_ctx_gpu_start(struct coproc_device *coproc,
-                                struct vgx6xxx_info *vinfo)
-{
-    /* perform soft-reset */
-    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, RGX_CR_SOFT_RESET_ALL);
-    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET,
-                   RGX_CR_SOFT_RESET_ALL ^ RGX_CR_SOFT_RESET_RASCALDUSTS_EN);
-    (void)gx6xxx_read64(coproc, RGX_CR_SOFT_RESET);
-
-    /* start everything, but META */
-    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, RGX_CR_SOFT_RESET_GARTEN_EN);
-
-    gx6xxx_write32(coproc, RGX_CR_SLC_CTRL_MISC,
-                   vinfo->reg_val_cr_slc_ctrl_misc.as.lo);
-    gx6xxx_write32(coproc, RGX_CR_META_BOOT,
-                   vinfo->reg_val_cr_meta_boot.as.lo);
-    gx6xxx_write64(coproc, RGX_CR_MTS_GARTEN_WRAPPER_CONFIG,
-                   vinfo->reg_val_cr_mts_garten_wrapper_config.val);
-    gx6xxx_write64(coproc, RGX_CR_AXI_ACE_LITE_CONFIGURATION,
-                   vinfo->reg_val_cr_axi_ace_lite_configuration.val);
-    gx6xxx_write64(coproc, RGX_CR_BIF_CAT_BASE0,
-                   vinfo->reg_val_cr_bif_cat_base0.val);
-
-    /* wait for at least 16 cycles */
-    udelay(32);
-
-    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, 0x0);
-    (void)gx6xxx_read64(coproc, RGX_CR_SOFT_RESET);
-
-    /* wait for at least 16 cycles */
-    udelay(32);
-
-    /* FIXME: if slave is booting then it needs a kick to start */
-
-    gx6xxx_set_state(coproc, GX6XXX_POWER_ON);
-    return 0;
-}
-
 int gx6xxx_poll_reg32(struct coproc_device *coproc, uint32_t offset,
                       uint32_t expected, uint32_t mask)
 {
@@ -716,6 +680,77 @@ static const char *power_state_to_str(RGXFWIF_POW_STATE state)
         break;
     }
     return "Unknown";
+}
+
+static inline int gx6xxx_wait_fw_started(struct vcoproc_instance *vcoproc,
+                                         struct vgx6xxx_info *vinfo,
+                                         IMG_BOOL expected)
+{
+    int ret;
+
+    dev_dbg(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
+            vinfo->fw_init->bFirmwareStarted);
+    ret = gx6xxx_poll_val32((volatile IMG_BOOL *)&vinfo->fw_init->bFirmwareStarted,
+                            expected, 0xFFFFFFFF);
+    dev_dbg(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
+            vinfo->fw_init->bFirmwareStarted);
+    return ret;
+}
+
+#define RGX_CR_SOFT_RESET_ALL   (RGX_CR_SOFT_RESET_MASKFULL)
+
+static int gx6xxx_ctx_gpu_start(struct vcoproc_instance *vcoproc,
+                                struct vgx6xxx_info *vinfo)
+{
+    struct coproc_device *coproc = vcoproc->coproc;
+    int ret;
+
+    /* perform soft-reset */
+    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, RGX_CR_SOFT_RESET_ALL);
+    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET,
+                   RGX_CR_SOFT_RESET_ALL ^ RGX_CR_SOFT_RESET_RASCALDUSTS_EN);
+    (void)gx6xxx_read64(coproc, RGX_CR_SOFT_RESET);
+
+    /* start everything, but META */
+    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, RGX_CR_SOFT_RESET_GARTEN_EN);
+
+    gx6xxx_write32(coproc, RGX_CR_SLC_CTRL_MISC,
+                   vinfo->reg_val_cr_slc_ctrl_misc.as.lo);
+    gx6xxx_write32(coproc, RGX_CR_META_BOOT,
+                   vinfo->reg_val_cr_meta_boot.as.lo);
+    gx6xxx_write64(coproc, RGX_CR_MTS_GARTEN_WRAPPER_CONFIG,
+                   vinfo->reg_val_cr_mts_garten_wrapper_config.val);
+    gx6xxx_write64(coproc, RGX_CR_AXI_ACE_LITE_CONFIGURATION,
+                   vinfo->reg_val_cr_axi_ace_lite_configuration.val);
+    gx6xxx_write64(coproc, RGX_CR_BIF_CAT_BASE0,
+                   vinfo->reg_val_cr_bif_cat_base0.val);
+
+    /* wait for at least 16 cycles */
+    udelay(32);
+
+    gx6xxx_write64(coproc, RGX_CR_SOFT_RESET, 0x0);
+    (void)gx6xxx_read64(coproc, RGX_CR_SOFT_RESET);
+
+    /* wait for at least 16 cycles */
+    udelay(32);
+
+    /* FIXME: if slave is booting then it needs a kick to start */
+
+    /* finally check that FW reports it's started */
+    ret = gx6xxx_wait_fw_started(vcoproc, vinfo, IMG_TRUE);
+    if ( ret < 0 )
+    {
+        dev_err(coproc->dev, "Firmware has not yet started\n");
+        /* TODO: context switch to cannot handle wait_time as context
+         * switch from does. this needs to be addressed
+         */
+#if 0
+        return ret;
+#endif
+    }
+
+    gx6xxx_set_state(coproc, GX6XXX_POWER_ON);
+    return 0;
 }
 
 static int gx6xxx_force_idle(struct vcoproc_instance *vcoproc,
@@ -991,7 +1026,23 @@ static int gx6xxx_wait_all_idle(struct vcoproc_instance *vcoproc,
             if ( ret < 0 )
                 return ret;
         }
-        gx6xxx_set_state(coproc, GX6XXX_POWER_OFF);
+        gx6xxx_set_state(coproc, GX6XXX_WAIT_FIRMWARE_NOT_STARTED);
+    }
+    return 0;
+}
+
+static int gx6xxx_wait_fw_stopped(struct vcoproc_instance *vcoproc,
+                                  struct vgx6xxx_info *vinfo,
+                                  enum gx6xxx_state state)
+{
+    if ( state == GX6XXX_WAIT_FIRMWARE_NOT_STARTED )
+    {
+        int ret;
+
+        ret = gx6xxx_wait_fw_started(vcoproc, vinfo, IMG_FALSE);
+        if ( ret < 0 )
+            return ret;
+        gx6xxx_set_state(vcoproc->coproc, GX6XXX_POWER_OFF);
     }
     return 0;
 }
@@ -1057,6 +1108,12 @@ static int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
     ret = gx6xxx_wait_all_idle(vcoproc, vinfo, state);
     if ( unlikely(ret < 0) )
         return ret;
+
+    state = atomic_read(&info->state);
+    ret = gx6xxx_wait_fw_stopped(vcoproc, vinfo, state);
+    if ( unlikely(ret < 0) )
+        return ret;
+
     if ( atomic_read(&info->state) == GX6XXX_POWER_OFF )
         dev_dbg(vcoproc->coproc->dev, "%s GPU stopped =============================================\n", __FUNCTION__);
     return 0;
@@ -1114,7 +1171,7 @@ static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
     if ( vinfo->state == VGX6XXX_STATE_WAITING )
     {
         vgx6xxx_set_state(next, VGX6XXX_STATE_RUNNING);
-        gx6xxx_ctx_gpu_start(next->coproc, vinfo);
+        gx6xxx_ctx_gpu_start(next, vinfo);
         /* flush scheduled work */
         if ( likely(vinfo->reg_cr_mts_schedule_lo_wait_cnt) )
         {
@@ -1131,7 +1188,7 @@ static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
     else if ( vinfo->state == VGX6XXX_STATE_INITIALIZING )
     {
         vgx6xxx_set_state(next, VGX6XXX_STATE_RUNNING);
-        gx6xxx_ctx_gpu_start(next->coproc, vinfo);
+        gx6xxx_ctx_gpu_start(next, vinfo);
     }
     else
     {

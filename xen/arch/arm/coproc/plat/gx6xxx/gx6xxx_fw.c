@@ -283,13 +283,13 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
                              struct vgx6xxx_info *vinfo,
                              uint32_t fw_init_dev_addr)
 {
-    RGXFWIF_INIT *fw_init;
     size_t size;
     const char *err_msg;
     int ret = -EINVAL;
 
-    fw_init = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_init_dev_addr, sizeof(*fw_init));
-    if ( unlikely(!fw_init) )
+    size = sizeof(*vinfo->fw_init);
+    vinfo->fw_init = gx6xxx_fw_mmu_map(vcoproc, vinfo, fw_init_dev_addr, size);
+    if ( unlikely(!vinfo->fw_init) )
     {
         dev_err(vcoproc->coproc->dev, "cannot map RGXFWIF_INIT\n");
         return -EINVAL;
@@ -298,7 +298,7 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     /* Kernel CCBCtl */
     size = sizeof(*vinfo->fw_kernel_ccb_ctl);
     vinfo->fw_kernel_ccb_ctl = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                                 fw_init->psKernelCCBCtl.ui32Addr,
+                                                 vinfo->fw_init->psKernelCCBCtl.ui32Addr,
                                                  size);
     if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb_ctl) )
     {
@@ -309,7 +309,7 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     /* Kernel CCB */
     size = (vinfo->fw_kernel_ccb_ctl->ui32WrapMask + 1) * sizeof(RGXFWIF_KCCB_CMD);
     vinfo->fw_kernel_ccb = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                             fw_init->psKernelCCB.ui32Addr,
+                                             vinfo->fw_init->psKernelCCB.ui32Addr,
                                              size);
     if ( IS_ERR_OR_NULL(vinfo->fw_kernel_ccb) )
     {
@@ -321,7 +321,7 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     /* Firmware CCBCtl */
     size = sizeof(*vinfo->fw_firmware_ccb_ctl);
     vinfo->fw_firmware_ccb_ctl = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                                   fw_init->psFirmwareCCBCtl.ui32Addr,
+                                                   vinfo->fw_init->psFirmwareCCBCtl.ui32Addr,
                                                    size);
     if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb_ctl) )
     {
@@ -332,7 +332,7 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     /* Firmware CCB */
     size = (vinfo->fw_firmware_ccb_ctl->ui32WrapMask + 1) * sizeof(RGXFWIF_FWCCB_CMD);
     vinfo->fw_firmware_ccb = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                               fw_init->psFirmwareCCB.ui32Addr,
+                                               vinfo->fw_init->psFirmwareCCB.ui32Addr,
                                                size);
     if ( IS_ERR_OR_NULL(vinfo->fw_firmware_ccb) )
     {
@@ -344,7 +344,7 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     /* Trace buffer */
     size = sizeof(*vinfo->fw_trace_buf);
     vinfo->fw_trace_buf = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                            fw_init->sTraceBufCtl.ui32Addr,
+                                            vinfo->fw_init->sTraceBufCtl.ui32Addr,
                                             size);
     if ( IS_ERR_OR_NULL(vinfo->fw_trace_buf) )
     {
@@ -356,7 +356,7 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
     /* Power sync object */
     size = sizeof(*vinfo->fw_power_sync);
     vinfo->fw_power_sync = gx6xxx_fw_mmu_map(vcoproc, vinfo,
-                                             fw_init->sPowerSync.ui32Addr,
+                                             vinfo->fw_init->sPowerSync.ui32Addr,
                                              size);
     if ( IS_ERR_OR_NULL((IMG_UINT32 *)vinfo->fw_power_sync) )
     {
@@ -364,7 +364,6 @@ static int gx6xxx_fw_map_all(struct vcoproc_instance *vcoproc,
         ret = PTR_ERR((IMG_UINT32 *)vinfo->fw_power_sync);
         goto fail;
     }
-    gx6xxx_fw_mmu_unmap(fw_init);
     return 0;
 
 fail:
@@ -438,6 +437,7 @@ void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
     gx6xxx_fw_mmu_unmap(vinfo->fw_firmware_ccb);
     gx6xxx_fw_mmu_unmap(vinfo->fw_firmware_ccb_ctl);
     gx6xxx_fw_mmu_unmap((IMG_UINT32 *)vinfo->fw_power_sync);
+    gx6xxx_fw_mmu_unmap(vinfo->fw_init);
 }
 
 /* get new write offset for Kernel messages to FW */
