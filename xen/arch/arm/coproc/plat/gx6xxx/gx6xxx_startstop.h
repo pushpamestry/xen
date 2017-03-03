@@ -44,11 +44,10 @@ struct gx6xxx_ctx_switch_state
      */
     bool (*run_condition)(struct vcoproc_instance *vcoproc);
     /* number of retries for this handler */
-    int num_retries;
+    uint32_t num_retries;
 #ifdef GX6XXX_DEBUG
     const char *name;
-    s_time_t time_min, time_max, time_avg;
-    int retry_min, retry_max, retry_avg;
+    s_time_t time_min, time_max;
 #endif
 };
 

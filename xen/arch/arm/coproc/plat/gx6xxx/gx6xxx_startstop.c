@@ -682,6 +682,34 @@ int gx6xxx_ctx_gpu_start(struct vcoproc_instance *vcoproc,
     return 0;
 }
 
+#ifdef GX6XXX_DEBUG
+/* FIXME: we don't care about overflows...
+ * FIXME: we collect stats for all vcoprocs
+ */
+static void gx6xxx_ctx_dbg_update(struct gx6xxx_ctx_switch_state *state,
+                                  s_time_t start, s_time_t end)
+{
+    s_time_t delta;
+
+    delta = end - start;
+
+    /* TODO: find a better way to initialize */
+    if ( unlikely(!state->time_min) )
+        state->time_min = STIME_MAX;
+
+    if ( state->time_min > delta )
+        state->time_min = delta;
+    if ( state->time_max < delta )
+        state->time_max = delta;
+
+    printk("------------------------- %s -------------------------\n",
+           __FUNCTION__);
+    printk("num_retries %d\n", state->num_retries);
+    printk("time_min %ld\n", state->time_min);
+    printk("time_max %ld\n", state->time_max);
+}
+#endif
+
 /* try stopping the GPU: 0 on success, <0 if still busy */
 int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                         struct vgx6xxx_info *vinfo)
@@ -689,6 +717,9 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
     struct coproc_device *coproc = vcoproc->coproc;
     struct gx6xxx_info *info = (struct gx6xxx_info *)coproc->priv;
     s_time_t wait_time;
+#ifdef GX6XXX_DEBUG
+    s_time_t dbg_time_start;
+#endif
 
     /* XXX: we CANNOT receive interrupts at this time - scheduler has
      * disabled the interrupts
@@ -705,6 +736,7 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
 #ifdef GX6XXX_DEBUG
         dev_dbg(vcoproc->coproc->dev, "%s state %s\n", __FUNCTION__,
                 info->state_curr->name);
+        dbg_time_start = NOW();
 #endif
         /* if there is an interrupt pending return minimally possible
          * time, so scheduler unlocks interrupts and we have a chance to
@@ -720,6 +752,7 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
             {
 #ifdef GX6XXX_DEBUG
                 info->state_curr->num_retries++;
+                gx6xxx_ctx_dbg_update(info->state_curr, dbg_time_start, NOW());
 #endif
                 return wait_time;
             }
@@ -735,6 +768,9 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                 break;
             }
         }
+#ifdef GX6XXX_DEBUG
+        gx6xxx_ctx_dbg_update(info->state_curr, dbg_time_start, NOW());
+#endif
         /* ready for the next step */
         info->state_curr++;
     }
