@@ -20,7 +20,6 @@
 #ifndef __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__
 #define __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__
 
-#include <asm/io.h>
 #include <xen/atomic.h>
 
 #include "../../coproc.h"
@@ -140,56 +139,21 @@ struct vgx6xxx_info
     mfn_t mfn_pd;
 };
 
-#ifdef GX6XXX_DEBUG
-void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val);
-#else
-#define gx6xxx_print_reg(a, b, c) {}
-#endif
-
-#define REG_LO32(a) ( (a) )
-#define REG_HI32(a) ( (a) + sizeof(uint32_t) )
-
-static inline uint32_t gx6xxx_read32(struct coproc_device *coproc,
-                                     uint32_t offset)
+struct gx6xxx_info
 {
-#ifdef GX6XXX_DEBUG
-    uint32_t val = readl((char *)coproc->mmios[0].base + offset);
+    struct vcoproc_instance *curr;
+    /* FIXME: IRQ registers are 64-bit, but only low 32-bits are used */
+    uint32_t *reg_vaddr_irq_status;
+    uint32_t *reg_vaddr_irq_clear;
 
-    gx6xxx_print_reg(__FUNCTION__, offset, val);
-    return val;
-#else
-    return readl((char *)coproc->mmios[0].base + offset);
-#endif
-}
-
-static inline void gx6xxx_write32(struct coproc_device *coproc,
-                                  uint32_t offset, uint32_t val)
-{
-    gx6xxx_print_reg(__FUNCTION__, offset, val);
-    writel(val, (char *)coproc->mmios[0].base + offset);
-}
-
-static inline uint64_t gx6xxx_read64(struct coproc_device *coproc,
-                                     uint32_t offset)
-{
-#ifdef GX6XXX_DEBUG
-    uint64_t val = readq((char *)coproc->mmios[0].base + offset);
-
-    gx6xxx_print_reg(__FUNCTION__, REG_LO32(offset), val & 0xffffffff);
-    gx6xxx_print_reg(__FUNCTION__, REG_HI32(offset), val >> 32);
-    return val;
-#else
-    return readq((char *)coproc->mmios[0].base + offset);
-#endif
-}
-
-static inline void gx6xxx_write64(struct coproc_device *coproc,
-                                  uint32_t offset, uint64_t val)
-{
-    gx6xxx_print_reg(__FUNCTION__, REG_LO32(offset), val & 0xffffffff);
-    gx6xxx_print_reg(__FUNCTION__, REG_HI32(offset), val >> 32);
-    writeq(val, (char *)coproc->mmios[0].base + offset);
-}
+    /* this is the current state of the state machine during context switch */
+    struct gx6xxx_ctx_switch_state *state_curr;
+    /* expected KCCB read offset: while injecting commands into KCCB
+     * we need to wait for those to be executed. this counter will hold
+     * expected ui32ReadOffset to poll for
+     */
+    uint32_t state_kccb_read_ofs;
+};
 
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_COPROC_H__ */
 

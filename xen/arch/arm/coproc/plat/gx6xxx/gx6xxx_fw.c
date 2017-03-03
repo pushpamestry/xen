@@ -13,6 +13,140 @@
  */
 #define GX6XXX_WAIT_FW_TO_NUM_US    100
 
+#ifdef GX6XXX_DEBUG
+bool gx6xxx_debug = true;
+#endif
+
+#ifdef GX6XXX_DEBUG
+void gx6xxx_print_reg(const char *prefix, uint32_t reg, uint32_t val)
+{
+    char *name;
+
+    if ( !gx6xxx_debug )
+        return;
+    switch (reg) {
+    case RGX_CR_SOFT_RESET:
+        name = "RGX_CR_SOFT_RESET LO";
+        break;
+    case RGX_CR_SOFT_RESET + 4:
+        name = "RGX_CR_SOFT_RESET HI";
+        break;
+    case RGX_CR_SLC_CTRL_MISC:
+        name = "RGX_CR_SLC_CTRL_MISC LO";
+        break;
+    case RGX_CR_SLC_CTRL_MISC + 4:
+        name = "RGX_CR_SLC_CTRL_MISC HI";
+        break;
+    case RGX_CR_META_BOOT:
+        name = "RGX_CR_META_BOOT LO";
+        break;
+    case RGX_CR_META_BOOT + 4:
+        name = "RGX_CR_META_BOOT HI";
+        break;
+    case RGX_CR_META_SP_MSLVIRQSTATUS:
+        name = "RGXFW_CR_IRQ_STATUS/CLEAR";
+        break;
+    case RGX_CR_TIMER:
+        name = "RGX_CR_TIMER LO";
+        break;
+    case RGX_CR_TIMER + 4:
+        name = "RGX_CR_TIMER HI";
+        break;
+    case RGX_CR_MTS_GARTEN_WRAPPER_CONFIG:
+        name = "RGX_CR_MTS_GARTEN_WRAPPER_CONFIG LO";
+        break;
+    case RGX_CR_MTS_GARTEN_WRAPPER_CONFIG + 4:
+        name = "RGX_CR_MTS_GARTEN_WRAPPER_CONFIG HI";
+        break;
+    case RGX_CR_AXI_ACE_LITE_CONFIGURATION:
+        name = "RGX_CR_AXI_ACE_LITE_CONFIGURATION LO";
+        break;
+    case RGX_CR_AXI_ACE_LITE_CONFIGURATION + 4:
+        name = "RGX_CR_AXI_ACE_LITE_CONFIGURATION HI";
+        break;
+    case RGX_CR_BIF_CAT_BASE0:
+        name = "RGX_CR_BIF_CAT_BASE0 LO";
+        break;
+    case RGX_CR_BIF_CAT_BASE0 + 4:
+        name = "RGX_CR_BIF_CAT_BASE0 HI";
+        break;
+    case RGX_CR_META_SP_MSLVCTRL1:
+        name = "RGX_CR_META_SP_MSLVCTRL1 LO";
+        break;
+    case RGX_CR_META_SP_MSLVCTRL1 + 4:
+        name = "RGX_CR_META_SP_MSLVCTRL1 HI";
+        break;
+    case RGX_CR_MTS_SCHEDULE:
+        name = "RGX_CR_MTS_SCHEDULE LO";
+        break;
+    case RGX_CR_MTS_SCHEDULE + 4:
+        name = "RGX_CR_MTS_SCHEDULE HI";
+        break;
+    case RGX_CR_META_SP_MSLVCTRL0:
+        name = "RGX_CR_META_SP_MSLVCTRL0 LO";
+        break;
+    case RGX_CR_META_SP_MSLVCTRL0 + 4:
+        name = "RGX_CR_META_SP_MSLVCTRL0 HI";
+        break;
+    case RGX_CR_META_SP_MSLVDATAX:
+        name = "RGX_CR_META_SP_MSLVDATAX LO";
+        break;
+    case RGX_CR_META_SP_MSLVDATAX + 4:
+        name = "RGX_CR_META_SP_MSLVDATAX HI";
+        break;
+    case RGX_CR_SIDEKICK_IDLE:
+        name = "RGX_CR_SIDEKICK_IDLE LO";
+        break;
+    case RGX_CR_SLC_IDLE:
+        name = "RGX_CR_SLC_IDLE LO";
+        break;
+    case RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC:
+        name = "RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC LO";
+        break;
+    case RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC:
+        name = "RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC LO";
+        break;
+    case RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC:
+        name = "RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC LO";
+        break;
+    case RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC:
+        name = "RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC LO";
+        break;
+    case RGX_CR_META_SP_MSLVDATAT:
+        name = "RGX_CR_META_SP_MSLVDATAT LO";
+        break;
+    case RGX_CR_BIF_STATUS_MMU:
+        name = "RGX_CR_BIF_STATUS_MMU LO";
+        break;
+    case RGX_CR_BIFPM_STATUS_MMU:
+        name = "RGX_CR_BIFPM_STATUS_MMU LO";
+        break;
+    case RGX_CR_BIFPM_READS_EXT_STATUS:
+        name = "RGX_CR_BIFPM_READS_EXT_STATUS LO";
+        break;
+    case RGX_CR_SLC_STATUS1:
+        name = "RGX_CR_SLC_STATUS1 LO";
+        break;
+    case RGX_CR_SLC_STATUS1 + 4:
+        name = "RGX_CR_SLC_STATUS1 HI";
+        break;
+    case RGX_CR_CLK_CTRL:
+        name = "RGX_CR_CLK_CTRL LO";
+        break;
+    case RGX_CR_CLK_CTRL + 4:
+        name = "RGX_CR_CLK_CTRL HI";
+        break;
+    default:
+        name = "??";
+        printk("Unknown register %08x\n", reg);
+        break;
+    }
+    printk("%s: %s -> %08x\n", prefix, name, val);
+}
+#else
+#define gx6xxx_print_reg(a, b, c) {}
+#endif
+
 #define RGXFW_SEGMMU_DATA_CACHE_MASK    (RGXFW_SEGMMU_DATA_BASE_ADDRESS     | \
                                          RGXFW_SEGMMU_DATA_META_CACHED      | \
                                          RGXFW_SEGMMU_DATA_META_UNCACHED    | \
@@ -440,9 +574,10 @@ void gx6xxx_fw_deinit(struct vcoproc_instance *vcoproc,
     gx6xxx_fw_mmu_unmap(vinfo->fw_init);
 }
 
+#ifdef GX6XXX_DEBUG
 /* get new write offset for Kernel messages to FW */
-void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
-                            struct vgx6xxx_info *vinfo)
+void gx6xxx_fw_dump_kccb(struct vcoproc_instance *vcoproc,
+                         struct vgx6xxx_info *vinfo)
 {
     uint32_t wrap_mask, read_ofs, write_ofs;
     const char *cmd_name;
@@ -495,6 +630,7 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
         read_ofs = (read_ofs + 1) & wrap_mask;
     }
 }
+#endif
 
 /* FIXME: rats nest for races...
  *
@@ -517,10 +653,10 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
  *
  * From the options above usage of ui32ReadOffset seems to be most suitable now
  */
-int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
-                               struct vgx6xxx_info *vinfo,
-                               RGXFWIF_KCCB_CMD *cmd, int nr,
-                               uint32_t *expected_offset)
+int gx6xxx_fw_send_kccb_cmd(struct vcoproc_instance *vcoproc,
+                            struct vgx6xxx_info *vinfo,
+                            RGXFWIF_KCCB_CMD *cmd, int nr,
+                            uint32_t *expected_offset)
 {
     uint32_t first_cmd_offset, cmd_offset;
     RGXFWIF_KCCB_CMD *kccb = (RGXFWIF_KCCB_CMD *)vinfo->fw_kernel_ccb;
@@ -544,9 +680,9 @@ int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
     return 0;
 }
 
-int gx6xxx_wait_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
-                               struct vgx6xxx_info *vinfo,
-                               uint32_t expected_offset)
+int gx6xxx_fw_wait_kccb_cmd(struct vcoproc_instance *vcoproc,
+                            struct vgx6xxx_info *vinfo,
+                            uint32_t expected_offset)
 {
     int to_us = GX6XXX_WAIT_FW_TO_NUM_US;
 
