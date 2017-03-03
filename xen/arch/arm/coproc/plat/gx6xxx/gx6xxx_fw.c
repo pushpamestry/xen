@@ -11,7 +11,7 @@
 /* this is the time out to wait for the firmware to consume
  * a command sent from Xen via the kernel's CCB
  */
-#define GX6XXX_WAIT_FW_TO_US    100
+#define GX6XXX_WAIT_FW_TO_NUM_US    100
 
 #define RGXFW_SEGMMU_DATA_CACHE_MASK    (RGXFW_SEGMMU_DATA_BASE_ADDRESS     | \
                                          RGXFW_SEGMMU_DATA_META_CACHED      | \
@@ -499,7 +499,7 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
 /* FIXME: rats nest for races...
  *
  * In order to send a command to the FW we use Kernel CCB buffer
- * If kernel needs to send a command it increases ui32WriteOffset,
+ * If kernel needs to send a command it increments ui32WriteOffset,
  * then FW advances ui32ReadOffset when it fetches the command.
  * Possible races:
  *  - if we use ui32WriteOffset then kernel driver still
@@ -519,13 +519,15 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
  */
 int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo,
-                               RGXFWIF_KCCB_CMD *cmd, int nr)
+                               RGXFWIF_KCCB_CMD *cmd, int nr,
+                               uint32_t *expected_offset)
 {
     uint32_t first_cmd_offset, cmd_offset;
     RGXFWIF_KCCB_CMD *kccb = (RGXFWIF_KCCB_CMD *)vinfo->fw_kernel_ccb;
-    int i, to_us = GX6XXX_WAIT_FW_TO_US;
+    int i;
 
-    cmd_offset = (vinfo->fw_kernel_ccb_ctl->ui32ReadOffset - nr) &
+    *expected_offset = vinfo->fw_kernel_ccb_ctl->ui32ReadOffset;
+    cmd_offset = (*expected_offset - nr) &
                  vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
     first_cmd_offset = cmd_offset;
     dev_dbg(vcoproc->coproc->dev,
@@ -539,12 +541,22 @@ int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
     for (i = 0; i < nr; i++)
         gx6xxx_write32(vcoproc->coproc, RGX_CR_MTS_SCHEDULE,
                        RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
-    while ( (vinfo->fw_kernel_ccb_ctl->ui32ReadOffset != cmd_offset) && to_us-- )
+    return 0;
+}
+
+int gx6xxx_wait_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
+                               struct vgx6xxx_info *vinfo,
+                               uint32_t expected_offset)
+{
+    int to_us = GX6XXX_WAIT_FW_TO_NUM_US;
+
+    while ( (vinfo->fw_kernel_ccb_ctl->ui32ReadOffset != expected_offset) &&
+             to_us-- )
     {
         cpu_relax();
         udelay(1);
     };
     dev_dbg(vcoproc->coproc->dev, "ui32KCCBCmdsExecuted %d\n",
             vinfo->fw_trace_buf->ui32KCCBCmdsExecuted);
-    return vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == cmd_offset ? 0 : -ETIMEDOUT;
+    return vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == expected_offset ? 0 : -ETIMEDOUT;
 }

@@ -44,7 +44,11 @@ void gx6xxx_dump_kernel_ccb(struct vcoproc_instance *vcoproc,
 
 int gx6xxx_send_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
                                struct vgx6xxx_info *vinfo,
-                               RGXFWIF_KCCB_CMD *cmd, int nr);
+                               RGXFWIF_KCCB_CMD *cmd, int nr,
+                               uint32_t *expected_offset);
+int gx6xxx_wait_kernel_ccb_cmd(struct vcoproc_instance *vcoproc,
+                               struct vgx6xxx_info *vinfo,
+                               uint32_t expected_offset);
 
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_FW_H__ */
 
