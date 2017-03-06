@@ -53,6 +53,11 @@ struct gx6xxx_ctx_switch_state
 
 extern struct gx6xxx_ctx_switch_state gx6xxx_ctx_gpu_stop_states[];
 
+int gx6xxx_ctx_init(struct vcoproc_instance *vcoproc,
+                        struct vgx6xxx_info *vinfo);
+void gx6xxx_ctx_deinit(struct vcoproc_instance *vcoproc,
+                           struct vgx6xxx_info *vinfo);
+
 int gx6xxx_ctx_gpu_start(struct vcoproc_instance *vcoproc,
                          struct vgx6xxx_info *vinfo);
 /* try stopping the GPU: 0 on success, <0 if still busy */

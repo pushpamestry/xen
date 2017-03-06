@@ -436,19 +436,10 @@ static int gx6xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
 
     vinfo->reg_val_cr_soft_reset.val = (uint64_t)-1;
 
-    vinfo->reg_ctx.count = DIV_ROUND_UP(mmio->size, sizeof(*vinfo->reg_ctx.regs));
-    dev_dbg(vcoproc->coproc->dev,
-            "allocating register context for %d registers\n",
-            vinfo->reg_ctx.count);
-    vinfo->reg_ctx.regs = (union reg64_t *)xzalloc_array(struct vgx6xxx_ctx,
-                    vinfo->reg_ctx.count);
-    if ( !vinfo->reg_ctx.regs )
-    {
-        dev_err(vcoproc->coproc->dev,
-                        "failed to allocate vcoproc register context buffer\n");
-        ret = -ENOMEM;
+    ret = gx6xxx_ctx_init(vcoproc, vinfo);
+    if ( ret < 0 )
         goto fail;
-    }
+
     register_mmio_handler(vcoproc->domain, &gx6xxx_mmio_handler,
                           mmio->addr, mmio->size, mmio);
 
@@ -465,7 +456,7 @@ static void gx6xxx_vcoproc_deinit(struct vcoproc_instance *vcoproc)
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
     gx6xxx_fw_deinit(vcoproc, vinfo);
-    xfree(vinfo->reg_ctx.regs);
+    gx6xxx_ctx_deinit(vcoproc, vinfo);
     xfree(vcoproc->priv);
 }
 

@@ -4,6 +4,325 @@
 #include "gx6xxx_fw.h"
 #include "gx6xxx_startstop.h"
 
+/* these are the registers we must save during context switch */
+static uint32_t gx6xxx_ctx_reg_offsets[] =
+{
+    RGX_CR_PBE_INDIRECT,
+    RGX_CR_PBE_PERF_INDIRECT,
+    RGX_CR_TPU_PERF_INDIRECT,
+    RGX_CR_RASTERISATION_PERF_INDIRECT,
+    RGX_CR_TPU_MCU_L0_PERF_INDIRECT,
+    RGX_CR_USC_PERF_INDIRECT,
+    RGX_CR_BLACKPEARL_INDIRECT,
+    RGX_CR_BLACKPEARL_PERF_INDIRECT,
+    RGX_CR_TEXAS3_PERF_INDIRECT,
+    RGX_CR_TEXAS_PERF_INDIRECT,
+    RGX_CR_BX_TU_PERF_INDIRECT,
+    RGX_CR_CLK_CTRL,
+    RGX_CR_CLK_STATUS,
+#if defined THESE_ARE_READ_ONLY
+    RGX_CR_CORE_ID,
+    RGX_CR_CORE_REVISION,
+    RGX_CR_DESIGNER_REV_FIELD1,
+    RGX_CR_DESIGNER_REV_FIELD2,
+    RGX_CR_CHANGESET_NUMBER,
+#endif
+    RGX_CR_CLK_XTPLUS_CTRL,
+    RGX_CR_CLK_XTPLUS_STATUS,
+    RGX_CR_SOFT_RESET,
+#if defined(RGX_FEATURE_S7_TOP_INFRASTRUCTURE)
+    RGX_CR_SOFT_RESET2,
+#endif
+    RGX_CR_EVENT_STATUS,
+    RGX_CR_TIMER,
+    RGX_CR_TLA_STATUS,
+    RGX_CR_PM_PARTIAL_RENDER_ENABLE,
+    RGX_CR_SIDEKICK_IDLE,
+    RGX_CR_VDM_CONTEXT_STORE_STATUS,
+    RGX_CR_VDM_CONTEXT_STORE_TASK0,
+    RGX_CR_VDM_CONTEXT_STORE_TASK1,
+    RGX_CR_VDM_CONTEXT_STORE_TASK2,
+    RGX_CR_VDM_CONTEXT_RESUME_TASK0,
+    RGX_CR_VDM_CONTEXT_RESUME_TASK1,
+    RGX_CR_VDM_CONTEXT_RESUME_TASK2,
+    RGX_CR_CDM_CONTEXT_STORE_STATUS,
+    RGX_CR_CDM_CONTEXT_PDS0,
+    RGX_CR_CDM_CONTEXT_PDS1,
+    RGX_CR_CDM_TERMINATE_PDS,
+    RGX_CR_CDM_TERMINATE_PDS1,
+    RGX_CR_CDM_CONTEXT_LOAD_PDS0,
+    RGX_CR_CDM_CONTEXT_LOAD_PDS1,
+#if !defined(RGX_FEATURE_META)
+    RGX_CR_MIPS_WRAPPER_CONFIG,
+    RGX_CR_MIPS_ADDR_REMAP1_CONFIG1,
+    RGX_CR_MIPS_ADDR_REMAP1_CONFIG2,
+    RGX_CR_MIPS_ADDR_REMAP2_CONFIG1,
+    RGX_CR_MIPS_ADDR_REMAP2_CONFIG2,
+    RGX_CR_MIPS_ADDR_REMAP3_CONFIG1,
+    RGX_CR_MIPS_ADDR_REMAP3_CONFIG2,
+    RGX_CR_MIPS_ADDR_REMAP4_CONFIG1,
+    RGX_CR_MIPS_ADDR_REMAP4_CONFIG2,
+    RGX_CR_MIPS_ADDR_REMAP5_CONFIG1,
+    RGX_CR_MIPS_ADDR_REMAP5_CONFIG2,
+    RGX_CR_MIPS_WRAPPER_IRQ_ENABLE,
+    RGX_CR_MIPS_WRAPPER_IRQ_STATUS,
+    RGX_CR_MIPS_WRAPPER_IRQ_CLEAR,
+    RGX_CR_MIPS_WRAPPER_NMI_ENABLE,
+    RGX_CR_MIPS_WRAPPER_NMI_EVENT,
+    RGX_CR_MIPS_DEBUG_CONFIG,
+    RGX_CR_MIPS_EXCEPTION_STATUS,
+#endif
+    RGX_CR_META_SP_MSLVDATAX,
+    RGX_CR_META_SP_MSLVDATAT,
+    RGX_CR_META_SP_MSLVCTRL0,
+    RGX_CR_META_SP_MSLVCTRL1,
+    RGX_CR_META_SP_MSLVHANDSHKE,
+    RGX_CR_META_SP_MSLVT0KICK,
+    RGX_CR_META_SP_MSLVT0KICKI,
+    RGX_CR_META_SP_MSLVT1KICK,
+    RGX_CR_META_SP_MSLVT1KICKI,
+    RGX_CR_META_SP_MSLVT2KICK,
+    RGX_CR_META_SP_MSLVT2KICKI,
+    RGX_CR_META_SP_MSLVT3KICK,
+    RGX_CR_META_SP_MSLVT3KICKI,
+    RGX_CR_META_SP_MSLVRST,
+    RGX_CR_META_SP_MSLVIRQSTATUS,
+    RGX_CR_META_SP_MSLVIRQENABLE,
+    RGX_CR_META_SP_MSLVIRQLEVEL,
+    RGX_CR_MTS_SCHEDULE,
+#if defined DO_THESE_NEED_TO_BE_ADDED_TOO
+    RGX_CR_MTS_SCHEDULE1,
+    RGX_CR_MTS_SCHEDULE2,
+    RGX_CR_MTS_SCHEDULE3,
+    RGX_CR_MTS_SCHEDULE4,
+    RGX_CR_MTS_SCHEDULE5,
+    RGX_CR_MTS_SCHEDULE6,
+    RGX_CR_MTS_SCHEDULE7,
+#endif
+    RGX_CR_MTS_BGCTX_THREAD0_DM_ASSOC,
+    RGX_CR_MTS_BGCTX_THREAD1_DM_ASSOC,
+    RGX_CR_MTS_INTCTX_THREAD0_DM_ASSOC,
+    RGX_CR_MTS_INTCTX_THREAD1_DM_ASSOC,
+    RGX_CR_MTS_GARTEN_WRAPPER_CONFIG,
+    RGX_CR_MTS_INTCTX,
+    RGX_CR_MTS_BGCTX,
+    RGX_CR_MTS_BGCTX_COUNTED_SCHEDULE,
+    RGX_CR_MTS_GPU_INT_STATUS,
+    RGX_CR_META_BOOT,
+    RGX_CR_GARTEN_SLC,
+    RGX_CR_PPP,
+    RGX_CR_ISP_RENDER,
+    RGX_CR_ISP_CTL,
+    RGX_CR_ISP_STATUS,
+    RGX_CR_ISP_XTP_RESUME0,
+    RGX_CR_ISP_XTP_STORE0,
+    RGX_CR_BIF_CAT_BASE0,
+    RGX_CR_BIF_CAT_BASE1,
+    RGX_CR_BIF_CAT_BASE2,
+    RGX_CR_BIF_CAT_BASE3,
+    RGX_CR_BIF_CAT_BASE4,
+    RGX_CR_BIF_CAT_BASE5,
+    RGX_CR_BIF_CAT_BASE6,
+    RGX_CR_BIF_CAT_BASE7,
+    RGX_CR_BIF_CAT_BASE_INDEX,
+    RGX_CR_BIF_PM_CAT_BASE_VCE0,
+    RGX_CR_BIF_PM_CAT_BASE_TE0,
+    RGX_CR_BIF_PM_CAT_BASE_ALIST0,
+    RGX_CR_BIF_PM_CAT_BASE_VCE1,
+    RGX_CR_BIF_PM_CAT_BASE_TE1,
+    RGX_CR_BIF_PM_CAT_BASE_ALIST1,
+    RGX_CR_BIF_MMU_ENTRY_STATUS,
+    RGX_CR_BIF_MMU_ENTRY,
+    RGX_CR_BIF_CTRL_INVAL,
+    RGX_CR_BIF_CTRL,
+    RGX_CR_BIF_FAULT_BANK0_MMU_STATUS,
+    RGX_CR_BIF_FAULT_BANK0_REQ_STATUS,
+    RGX_CR_BIF_FAULT_BANK1_MMU_STATUS,
+    RGX_CR_BIF_FAULT_BANK1_REQ_STATUS,
+    RGX_CR_BIF_MMU_STATUS,
+    RGX_CR_BIF_READS_EXT_STATUS,
+    RGX_CR_BIF_READS_INT_STATUS,
+    RGX_CR_BIFPM_READS_INT_STATUS,
+    RGX_CR_BIFPM_READS_EXT_STATUS,
+    RGX_CR_BIFPM_STATUS_MMU,
+    RGX_CR_BIF_STATUS_MMU,
+    RGX_CR_BIF_FAULT_READ,
+    RGX_CR_TEXAS_BIF_FAULT_BANK0_MMU_STATUS,
+    RGX_CR_TEXAS_BIF_FAULT_BANK0_REQ_STATUS,
+    RGX_CR_MCU_FENCE,
+    RGX_CR_SPFILTER_SIGNAL_DESCR,
+    RGX_CR_SPFILTER_SIGNAL_DESCR_MIN,
+    RGX_CR_SLC_CTRL_MISC,
+    RGX_CR_SLC_CTRL_FLUSH_INVAL,
+    RGX_CR_SLC_STATUS0,
+    RGX_CR_SLC_CTRL_BYPASS,
+    RGX_CR_SLC_STATUS1,
+    RGX_CR_SLC_IDLE,
+    RGX_CR_SLC_STATUS2,
+    RGX_CR_SLC_CTRL_MISC2,
+    RGX_CR_SLC_CROSSBAR_LOAD_BALANCE,
+    RGX_CR_USC_UVS0_CHECKSUM,
+    RGX_CR_USC_UVS1_CHECKSUM,
+    RGX_CR_USC_UVS2_CHECKSUM,
+    RGX_CR_USC_UVS3_CHECKSUM,
+    RGX_CR_PPP_SIGNATURE,
+    RGX_CR_TE_SIGNATURE,
+    RGX_CR_TE_CHECKSUM,
+    RGX_CR_USC_UVB_CHECKSUM,
+    RGX_CR_VCE_CHECKSUM,
+    RGX_CR_ISP_PDS_CHECKSUM,
+    RGX_CR_ISP_TPF_CHECKSUM,
+    RGX_CR_TFPU_PLANE0_CHECKSUM,
+    RGX_CR_TFPU_PLANE1_CHECKSUM,
+    RGX_CR_PBE_CHECKSUM,
+    RGX_CR_PDS_DOUTM_STM_SIGNATURE,
+    RGX_CR_IFPU_ISP_CHECKSUM,
+    RGX_CR_USC_UVS4_CHECKSUM,
+    RGX_CR_USC_UVS5_CHECKSUM,
+    RGX_CR_PPP_CLIP_CHECKSUM,
+    RGX_CR_PERF_TA_PHASE,
+    RGX_CR_PERF_3D_PHASE,
+    RGX_CR_PERF_COMPUTE_PHASE,
+    RGX_CR_PERF_TA_CYCLE,
+    RGX_CR_PERF_3D_CYCLE,
+    RGX_CR_PERF_COMPUTE_CYCLE,
+    RGX_CR_PERF_TA_OR_3D_CYCLE,
+    RGX_CR_PERF_INITIAL_TA_CYCLE,
+    RGX_CR_PERF_SLC0_READ_STALL,
+    RGX_CR_PERF_SLC0_WRITE_STALL,
+    RGX_CR_PERF_SLC1_READ_STALL,
+    RGX_CR_PERF_SLC1_WRITE_STALL,
+    RGX_CR_PERF_SLC2_READ_STALL,
+    RGX_CR_PERF_SLC2_WRITE_STALL,
+    RGX_CR_PERF_SLC3_READ_STALL,
+    RGX_CR_PERF_SLC3_WRITE_STALL,
+    RGX_CR_PERF_3D_SPINUP,
+    RGX_CR_AXI_ACE_LITE_CONFIGURATION,
+    RGX_CR_POWER_ESTIMATE_RESULT,
+    RGX_CR_TA_PERF,
+    RGX_CR_TA_PERF_SELECT0,
+    RGX_CR_TA_PERF_SELECT1,
+    RGX_CR_TA_PERF_SELECT2,
+    RGX_CR_TA_PERF_SELECT3,
+    RGX_CR_TA_PERF_SELECTED_BITS,
+    RGX_CR_TA_PERF_COUNTER_0,
+    RGX_CR_TA_PERF_COUNTER_1,
+    RGX_CR_TA_PERF_COUNTER_2,
+    RGX_CR_TA_PERF_COUNTER_3,
+    RGX_CR_RASTERISATION_PERF,
+    RGX_CR_RASTERISATION_PERF_SELECT0,
+    RGX_CR_RASTERISATION_PERF_COUNTER_0,
+    RGX_CR_HUB_BIFPMCACHE_PERF,
+    RGX_CR_HUB_BIFPMCACHE_PERF_SELECT0,
+    RGX_CR_HUB_BIFPMCACHE_PERF_COUNTER_0,
+    RGX_CR_TPU_MCU_L0_PERF,
+    RGX_CR_TPU_MCU_L0_PERF_SELECT0,
+    RGX_CR_TPU_MCU_L0_PERF_COUNTER_0,
+    RGX_CR_USC_PERF,
+    RGX_CR_USC_PERF_SELECT0,
+    RGX_CR_USC_PERF_COUNTER_0,
+    RGX_CR_JONES_IDLE,
+    RGX_CR_TORNADO_PERF,
+    RGX_CR_TORNADO_PERF_SELECT0,
+    RGX_CR_TORNADO_PERF_COUNTER_0,
+    RGX_CR_TEXAS_PERF,
+    RGX_CR_TEXAS_PERF_SELECT0,
+    RGX_CR_TEXAS_PERF_COUNTER_0,
+    RGX_CR_JONES_PERF,
+    RGX_CR_JONES_PERF_SELECT0,
+    RGX_CR_JONES_PERF_COUNTER_0,
+    RGX_CR_BLACKPEARL_PERF,
+    RGX_CR_BLACKPEARL_PERF_SELECT0,
+    RGX_CR_BLACKPEARL_PERF_COUNTER_0,
+    RGX_CR_PBE_PERF,
+    RGX_CR_PBE_PERF_SELECT0,
+    RGX_CR_PBE_PERF_COUNTER_0,
+    RGX_CR_OCP_REVINFO,
+    RGX_CR_OCP_SYSCONFIG,
+    RGX_CR_OCP_IRQSTATUS_RAW_0,
+    RGX_CR_OCP_IRQSTATUS_RAW_1,
+    RGX_CR_OCP_IRQSTATUS_RAW_2,
+    RGX_CR_OCP_IRQSTATUS_0,
+    RGX_CR_OCP_IRQSTATUS_1,
+    RGX_CR_OCP_IRQSTATUS_2,
+    RGX_CR_OCP_IRQENABLE_SET_0,
+    RGX_CR_OCP_IRQENABLE_SET_1,
+    RGX_CR_OCP_IRQENABLE_SET_2,
+    RGX_CR_OCP_IRQENABLE_CLR_0,
+    RGX_CR_OCP_IRQENABLE_CLR_1,
+    RGX_CR_OCP_IRQENABLE_CLR_2,
+    RGX_CR_OCP_IRQ_EVENT,
+    RGX_CR_OCP_DEBUG_CONFIG,
+    RGX_CR_OCP_DEBUG_STATUS,
+    RGX_CR_BIF_TRUST,
+    RGX_CR_SYS_BUS_SECURE,
+#if defined(RGX_FEATURE_RAY_TRACING)
+    RGX_CR_FBA_FC0_CHECKSUM,
+    RGX_CR_FBA_FC1_CHECKSUM,
+    RGX_CR_FBA_FC2_CHECKSUM,
+    RGX_CR_FBA_FC3_CHECKSUM,
+#endif
+    RGX_CR_CLK_CTRL2,
+    RGX_CR_CLK_STATUS2,
+#if defined(RGX_FEATURE_RAY_TRACING)
+    RGX_CR_RPM_SHF_FPL,
+    RGX_CR_RPM_SHF_FPL_READ,
+    RGX_CR_RPM_SHF_FPL_WRITE,
+    RGX_CR_RPM_SHG_FPL,
+    RGX_CR_RPM_SHG_FPL_READ,
+    RGX_CR_RPM_SHG_FPL_WRITE,
+#endif
+    RGX_CR_SH_PERF,
+    RGX_CR_SH_PERF_SELECT0,
+    RGX_CR_SH_PERF_COUNTER_0,
+#if defined(RGX_FEATURE_RAY_TRACING)
+    RGX_CR_SHF_SHG_CHECKSUM,
+    RGX_CR_SHF_VERTEX_BIF_CHECKSUM,
+    RGX_CR_SHF_VARY_BIF_CHECKSUM,
+    RGX_CR_RPM_BIF_CHECKSUM,
+    RGX_CR_SHG_BIF_CHECKSUM,
+    RGX_CR_SHG_FE_BE_CHECKSUM,
+    DPX_CR_BF_PERF,
+    DPX_CR_BF_PERF_SELECT0,
+    DPX_CR_BF_PERF_COUNTER_0,
+    DPX_CR_BT_PERF,
+    DPX_CR_BT_PERF_SELECT0,
+    DPX_CR_BT_PERF_COUNTER_0,
+    DPX_CR_RQ_USC_DEBUG,
+    DPX_CR_BIF_FAULT_BANK_MMU_STATUS,
+    DPX_CR_BIF_FAULT_BANK_REQ_STATUS,
+    DPX_CR_BIF_MMU_STATUS,
+    DPX_CR_RT_PERF,
+    DPX_CR_RT_PERF_SELECT0,
+    DPX_CR_RT_PERF_COUNTER_0,
+    DPX_CR_BX_TU_PERF,
+    DPX_CR_BX_TU_PERF_SELECT0,
+    DPX_CR_BX_TU_PERF_COUNTER_0,
+    DPX_CR_RS_PDS_RR_CHECKSUM,
+#endif
+    RGX_CR_MMU_CBASE_MAPPING_CONTEXT,
+    RGX_CR_MMU_CBASE_MAPPING,
+    RGX_CR_MMU_FAULT_STATUS,
+    RGX_CR_MMU_FAULT_STATUS_META,
+    RGX_CR_SLC3_CTRL_MISC,
+    RGX_CR_SLC3_SCRAMBLE,
+    RGX_CR_SLC3_SCRAMBLE2,
+    RGX_CR_SLC3_SCRAMBLE3,
+    RGX_CR_SLC3_SCRAMBLE4,
+    RGX_CR_SLC3_STATUS,
+    RGX_CR_SLC3_IDLE,
+    RGX_CR_SLC3_FAULT_STOP_STATUS,
+    RGX_CR_VDM_CONTEXT_STORE_MODE,
+    RGX_CR_CONTEXT_MAPPING0,
+    RGX_CR_CONTEXT_MAPPING1,
+    RGX_CR_CONTEXT_MAPPING2,
+    RGX_CR_CONTEXT_MAPPING3,
+    RGX_CR_BIF_JONES_OUTSTANDING_READ,
+    RGX_CR_BIF_BLACKPEARL_OUTSTANDING_READ,
+    RGX_CR_BIF_DUST_OUTSTANDING_READ,
+    RGX_CR_CONTEXT_MAPPING4,
+};
+
 static inline bool gx6xxx_is_irq_pending(struct gx6xxx_info *info)
 {
     uint32_t irq_status;
@@ -172,7 +491,6 @@ static inline int gx6xxx_wait_fw_started(struct vcoproc_instance *vcoproc,
 static s_time_t gx6xxx_save_reg_ctx(struct vcoproc_instance *vcoproc)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
-    uint32_t offset;
     int i;
 #ifdef GX6XXX_DEBUG
     bool old_gx6xxx_debug;
@@ -180,11 +498,11 @@ static s_time_t gx6xxx_save_reg_ctx(struct vcoproc_instance *vcoproc)
     old_gx6xxx_debug = gx6xxx_debug;
     gx6xxx_debug = false;
 #endif
-    for (i = 0, offset = 0; i < vinfo->reg_ctx.count;
-         i++, offset += sizeof(*vinfo->reg_ctx.regs))
+    for (i = 0; i < vinfo->reg_ctx.count; i++)
     {
-        vinfo->reg_ctx.regs[i].val = gx6xxx_read64(vcoproc->coproc, offset);
-        gx6xxx_write64(vcoproc->coproc, offset, 0);
+        vinfo->reg_ctx.regs[i].val = gx6xxx_read64(vcoproc->coproc,
+                                                   gx6xxx_ctx_reg_offsets[i]);
+        gx6xxx_write64(vcoproc->coproc, gx6xxx_ctx_reg_offsets[i], 0);
     }
 #ifdef GX6XXX_DEBUG
     gx6xxx_debug = old_gx6xxx_debug;
@@ -195,7 +513,6 @@ static s_time_t gx6xxx_save_reg_ctx(struct vcoproc_instance *vcoproc)
 static void gx6xxx_restore_reg_ctx(struct vcoproc_instance *vcoproc,
                                    struct vgx6xxx_info *vinfo)
 {
-    uint32_t offset;
     int i;
 #ifdef GX6XXX_DEBUG
     bool old_gx6xxx_debug;
@@ -203,10 +520,13 @@ static void gx6xxx_restore_reg_ctx(struct vcoproc_instance *vcoproc,
     old_gx6xxx_debug = gx6xxx_debug;
     gx6xxx_debug = false;
 #endif
-    for (i = 0, offset = 0; i < vinfo->reg_ctx.count;
-         i++, offset += sizeof(*vinfo->reg_ctx.regs))
-        gx6xxx_write64(vcoproc->coproc, i * sizeof(*vinfo->reg_ctx.regs),
+    dev_dbg(vcoproc->coproc->dev, "restoring %d registers\n",
+            vinfo->reg_ctx.count);
+    for (i = 0; i < vinfo->reg_ctx.count; i++)
+        gx6xxx_write64(vcoproc->coproc, gx6xxx_ctx_reg_offsets[i],
                        vinfo->reg_ctx.regs[i].val);
+    dev_dbg(vcoproc->coproc->dev, "restored %d registers\n",
+            vinfo->reg_ctx.count);
 #ifdef GX6XXX_DEBUG
     gx6xxx_debug = old_gx6xxx_debug;
 #endif
@@ -779,3 +1099,32 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
     return 0;
 }
 
+int gx6xxx_ctx_init(struct vcoproc_instance *vcoproc,
+                        struct vgx6xxx_info *vinfo)
+{
+    int ret;
+
+    vinfo->reg_ctx.count = ARRAY_SIZE(gx6xxx_ctx_reg_offsets);
+    dev_dbg(vcoproc->coproc->dev,
+            "allocating register context for %d registers\n",
+            vinfo->reg_ctx.count);
+    vinfo->reg_ctx.regs = (union reg64_t *)xzalloc_array(struct vgx6xxx_ctx,
+                    vinfo->reg_ctx.count);
+    if ( !vinfo->reg_ctx.regs )
+    {
+        dev_err(vcoproc->coproc->dev,
+                "failed to allocate vcoproc register context buffer\n");
+        ret = -ENOMEM;
+        goto fail;
+    }
+    return 0;
+fail:
+    xfree(vinfo->reg_ctx.regs);
+    return ret;
+}
+
+void gx6xxx_ctx_deinit(struct vcoproc_instance *vcoproc,
+                           struct vgx6xxx_info *vinfo)
+{
+    xfree(vinfo->reg_ctx.regs);
+}
