@@ -621,6 +621,9 @@ void gx6xxx_fw_dump_kccb(struct vcoproc_instance *vcoproc,
         case RGXFWIF_KCCB_CMD_HEALTH_CHECK:
             cmd_name = "RGXFWIF_KCCB_CMD_HEALTH_CHECK";
             break;
+        case RGXFWIF_KCCB_CMD_POW:
+            cmd_name = "RGXFWIF_KCCB_CMD_POW";
+            break;
         default:
             printk("Unknown KCCB command %d at ui32ReadOffset %d\n",
                    cmd->eCmdType, read_ofs);
@@ -666,8 +669,10 @@ int gx6xxx_fw_send_kccb_cmd(struct vcoproc_instance *vcoproc,
     cmd_offset = (*expected_offset - nr) &
                  vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
     first_cmd_offset = cmd_offset;
+#ifdef GX6XXX_DEBUG
     dev_dbg(vcoproc->coproc->dev,
             "writing %d command(s) at offset %d\n", nr, cmd_offset);
+#endif
     for (i = 0; i < nr; i++)
     {
         kccb[cmd_offset] = cmd[i];
@@ -692,7 +697,9 @@ int gx6xxx_fw_wait_kccb_cmd(struct vcoproc_instance *vcoproc,
         cpu_relax();
         udelay(1);
     };
+#ifdef GX6XXX_DEBUG
     dev_dbg(vcoproc->coproc->dev, "ui32KCCBCmdsExecuted %d\n",
             vinfo->fw_trace_buf->ui32KCCBCmdsExecuted);
+#endif
     return vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == expected_offset ? 0 : -ETIMEDOUT;
 }

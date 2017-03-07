@@ -22,7 +22,11 @@
 
 #include <xen/types.h>
 
+struct vcoproc_instance;
+
 void gx6xxx_dump(uint32_t *vaddr, int size);
+void gx6xxx_1_to_1_mapping_chk(struct vcoproc_instance *vcoproc,
+                               paddr_t start, paddr_t end);
 
 #endif /* __ARCH_ARM_COPROC_PLAT_GX6XXX_GX6XXX_HEXDUMP_H__ */
 

@@ -477,14 +477,28 @@ static inline int gx6xxx_wait_fw_started(struct vcoproc_instance *vcoproc,
                                          struct vgx6xxx_info *vinfo,
                                          IMG_BOOL expected)
 {
-    int ret;
+    /* TODO: this needs to be done on framework level, e.g.
+     * currently on ctx switch to we have no possibility to return wait_time
+     * needed to wait for the FW to be started.
+     * Temporarily use re-try counter
+     */
+    int ret, retry = 10;
 
-    dev_dbg(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
-            vinfo->fw_init->bFirmwareStarted);
-    ret = gx6xxx_poll_val32((volatile IMG_BOOL *)&vinfo->fw_init->bFirmwareStarted,
-                            expected, 0xFFFFFFFF);
-    dev_dbg(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
-            vinfo->fw_init->bFirmwareStarted);
+    while (retry--)
+    {
+#ifdef GX6XXX_DEBUG
+        dev_dbg(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
+                vinfo->fw_init->bFirmwareStarted);
+#endif
+        ret = gx6xxx_poll_val32((volatile IMG_BOOL *)&vinfo->fw_init->bFirmwareStarted,
+                                expected, 0xFFFFFFFF);
+#ifdef GX6XXX_DEBUG
+        dev_dbg(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
+                vinfo->fw_init->bFirmwareStarted);
+#endif
+        if ( !ret )
+            break;
+    }
     return ret;
 }
 
@@ -519,15 +533,15 @@ static void gx6xxx_restore_reg_ctx(struct vcoproc_instance *vcoproc,
 
     old_gx6xxx_debug = gx6xxx_debug;
     gx6xxx_debug = false;
-#endif
     dev_dbg(vcoproc->coproc->dev, "restoring %d registers\n",
             vinfo->reg_ctx.count);
+#endif
     for (i = 0; i < vinfo->reg_ctx.count; i++)
         gx6xxx_write64(vcoproc->coproc, gx6xxx_ctx_reg_offsets[i],
                        vinfo->reg_ctx.regs[i].val);
+#ifdef GX6XXX_DEBUG
     dev_dbg(vcoproc->coproc->dev, "restored %d registers\n",
             vinfo->reg_ctx.count);
-#ifdef GX6XXX_DEBUG
     gx6xxx_debug = old_gx6xxx_debug;
 #endif
     /* force all clocks on */
@@ -599,13 +613,15 @@ static s_time_t gx6xxx_force_idle(struct vcoproc_instance *vcoproc)
     pow_cmd.uCmdData.sPowData.ePowType = RGXFWIF_POW_FORCED_IDLE_REQ;
     pow_cmd.uCmdData.sPowData.uPoweReqData.bCancelForcedIdle = IMG_FALSE;
 
-    dev_dbg(vcoproc->coproc->dev, "sending forced idle command\n");
-
     vinfo->fw_power_sync[0] = 0;
     ret = gx6xxx_fw_send_kccb_cmd(vcoproc, vinfo, &pow_cmd, 1,
                                   &info->state_kccb_read_ofs);
     if ( unlikely(ret < 0) )
+    {
+        dev_err(vcoproc->coproc->dev,
+                "failed to send forced idle command to FW\n");
         return ret;
+    }
     return 0;
 }
 
@@ -1002,7 +1018,7 @@ int gx6xxx_ctx_gpu_start(struct vcoproc_instance *vcoproc,
     return 0;
 }
 
-#ifdef GX6XXX_DEBUG
+#ifdef GX6XXX_DEBUG_PERF
 /* FIXME: we don't care about overflows...
  * FIXME: we collect stats for all vcoprocs
  */
@@ -1037,7 +1053,7 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
     struct coproc_device *coproc = vcoproc->coproc;
     struct gx6xxx_info *info = (struct gx6xxx_info *)coproc->priv;
     s_time_t wait_time;
-#ifdef GX6XXX_DEBUG
+#ifdef GX6XXX_DEBUG_PERF
     s_time_t dbg_time_start;
 #endif
 
@@ -1047,13 +1063,13 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
 #ifdef GX6XXX_DEBUG
     dev_dbg(vcoproc->coproc->dev, "%s sPowerState is %s\n",
             __FUNCTION__, power_state_to_str(vinfo->fw_trace_buf->ePowState));
-#endif
     dev_dbg(vcoproc->coproc->dev, "%s FW reports %d vs Xen %d IRQs\n",
            __FUNCTION__, vinfo->fw_trace_buf->aui32InterruptCount[0],
            atomic_read(&vinfo->irq_count));
+#endif
     while ( info->state_curr->handler )
     {
-#ifdef GX6XXX_DEBUG
+#ifdef GX6XXX_DEBUG_PERF
         dev_dbg(vcoproc->coproc->dev, "%s state %s\n", __FUNCTION__,
                 info->state_curr->name);
         dbg_time_start = NOW();
@@ -1072,7 +1088,9 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
             {
 #ifdef GX6XXX_DEBUG
                 info->state_curr->num_retries++;
+#if GX6XXX_DEBUG_PERF
                 gx6xxx_ctx_dbg_update(info->state_curr, dbg_time_start, NOW());
+#endif
 #endif
                 return wait_time;
             }
@@ -1088,7 +1106,7 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
                 break;
             }
         }
-#ifdef GX6XXX_DEBUG
+#ifdef GX6XXX_DEBUG_PERF
         gx6xxx_ctx_dbg_update(info->state_curr, dbg_time_start, NOW());
 #endif
         /* ready for the next step */

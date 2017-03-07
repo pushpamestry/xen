@@ -54,9 +54,11 @@ static inline void vgx6xxx_set_state(struct vcoproc_instance *vcoproc,
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
+#ifdef GX6XXX_DEBUG
     dev_dbg(vcoproc->coproc->dev,
             "Domain %d going from %s to %s\n", vcoproc->domain->domain_id,
             vgx6xxx_state_to_str(vinfo->state), vgx6xxx_state_to_str(state));
+#endif
     vinfo->state = state;
 }
 
@@ -97,7 +99,7 @@ static bool gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
                                 struct vcoproc_instance *vcoproc)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
-    bool start = false;
+    bool handled = true;
 
     switch ( offset )
     {
@@ -106,11 +108,9 @@ static bool gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
         break;
     case REG_LO32(RGX_CR_SOFT_RESET):
         gx6xxx_store32(offset, &vinfo->reg_val_cr_soft_reset.as.lo, val);
-        start = gx6xxx_check_start_condition(vcoproc, vinfo);
         break;
     case REG_HI32(RGX_CR_SOFT_RESET):
         gx6xxx_store32(offset, &vinfo->reg_val_cr_soft_reset.as.hi, val);
-        start = gx6xxx_check_start_condition(vcoproc, vinfo);
         break;
     case REG_LO32(RGX_CR_MTS_GARTEN_WRAPPER_CONFIG):
         gx6xxx_store32(offset, &vinfo->reg_val_cr_mts_garten_wrapper_config.as.lo,
@@ -138,10 +138,14 @@ static bool gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
         gx6xxx_store32(offset, &vinfo->reg_val_cr_axi_ace_lite_configuration.as.hi,
                        val);
         break;
+    case REG_LO32(RGX_CR_META_SP_MSLVCTRL1):
+        printk("HANDLE me!!!! LO RGX_CR_META_SP_MSLVCTRL1\n");
+        break;
     default:
+        handled = false;
         break;
     }
-    return start;
+    return handled;
 }
 
 static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
@@ -212,7 +216,7 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
     spin_lock_irqsave(&ctx.coproc->vcoprocs_lock, flags);
     vinfo = (struct vgx6xxx_info *)ctx.vcoproc->priv;
-#ifdef GX6XXX_DEBUG
+#ifdef GX6XXX_DEBUG_TEST_KERN_DRV
     /* XXX: this code is used for DomU test GPU driver to start
      * vcoproc's scheduler
      */
@@ -248,20 +252,29 @@ static int gx6xxx_mmio_write(struct vcpu *v, mmio_info_t *info,
     {
         if ( likely(ctx.offset == RGX_CR_MTS_SCHEDULE) )
         {
-            BUG_ON( r != RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
+            BUG_ON(r != RGX_CR_MTS_SCHEDULE_TASK_COUNTED);
             vinfo->reg_cr_mts_schedule_lo_wait_cnt++;
             goto out;
         }
-        dev_err(ctx.coproc->dev, "Unexpected write at %08x val %08x\n",
-                ctx.offset, (uint32_t)r);
-        BUG();
+        if ( unlikely(!gx6xxx_on_reg_write(ctx.offset, r, ctx.vcoproc)))
+        {
+            dev_err(ctx.coproc->dev, "Unexpected write at %08x val %08x\n",
+                    ctx.offset, (uint32_t)r);
+            BUG();
+        }
     }
     else if ( vinfo->state == VGX6XXX_STATE_INITIALIZING )
     {
         /* FIXME: in this state we only save values of the registers
          * so those can be used during real initialization
          */
-        if ( unlikely(gx6xxx_on_reg_write(ctx.offset, r, ctx.vcoproc)) )
+        if ( unlikely(!gx6xxx_on_reg_write(ctx.offset, r, ctx.vcoproc)))
+        {
+            dev_err(ctx.coproc->dev, "Unexpected write at %08x val %08x\n",
+                    ctx.offset, (uint32_t)r);
+            BUG();
+        }
+        if ( unlikely(gx6xxx_check_start_condition(ctx.vcoproc, vinfo)) )
         {
             vinfo->scheduler_started = true;
             spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
@@ -284,7 +297,7 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     uint32_t irq_status;
 
     spin_lock(&coproc->vcoprocs_lock);
-#if 1
+#ifdef GX6XXX_DEBUG
     dev_dbg(coproc->dev, "> %s dom %d\n",
             __FUNCTION__, info->curr->domain->domain_id);
 #endif
@@ -312,22 +325,21 @@ static void gx6xxx_irq_handler(int irq, void *dev,
             dev_err(vcoproc->coproc->dev, "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++ Not delivering IRQ in state %s\n",
                    vgx6xxx_state_to_str(vinfo->state));
 
+#ifdef GX6XXX_DEBUG
         dev_dbg(coproc->dev, "FW reports IRQ count %d we have %d\n",
                 vinfo->fw_trace_buf->aui32InterruptCount[0],
                 atomic_read(&vinfo->irq_count));
+#endif
     }
     /* from RGX kernel driver (rgxinit.c):
      * we are handling any unhandled interrupts here so align the host
      * count with the FW count
      */
     atomic_set(&vinfo->irq_count, vinfo->fw_trace_buf->aui32InterruptCount[0]);
-#if 1
+#ifdef GX6XXX_DEBUG
     dev_dbg(coproc->dev, "< %s dom %d\n",
             __FUNCTION__, info->curr->domain->domain_id);
 #endif
-    if ( info->curr->domain->domain_id )
-        printk("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++ delivering to Dom %d\n",
-                info->curr->domain->domain_id);
     spin_unlock(&coproc->vcoprocs_lock);
 }
 
@@ -343,8 +355,10 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
     s_time_t wait_time;
     unsigned long flags;
 
+#ifdef GX6XXX_DEBUG
     dev_dbg(curr->coproc->dev, "%s dom %d\n", __FUNCTION__, curr->domain->domain_id);
-#if 1
+#endif
+#if GX6XXX_DEBUG_TEST_KERN_DRV
     if ( curr->domain->domain_id )
         return 0;
 #endif
@@ -379,8 +393,10 @@ static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)next->priv;
     unsigned long flags;
 
+#ifdef GX6XXX_DEBUG
     dev_dbg(next->coproc->dev, "%s dom %d\n", __FUNCTION__, next->domain->domain_id);
-#if 1
+#endif
+#if GX6XXX_DEBUG_TEST_KERN_DRV
     if ( next->domain->domain_id )
         return 0;
 #endif
@@ -393,8 +409,10 @@ static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
         /* flush scheduled work */
         if ( likely(vinfo->reg_cr_mts_schedule_lo_wait_cnt) )
         {
+#ifdef GX6XXX_DEBUG
             dev_dbg(next->coproc->dev, "have %d scheduled tasks\n",
                     vinfo->reg_cr_mts_schedule_lo_wait_cnt);
+#endif
             do
             {
                 gx6xxx_write32(next->coproc, RGX_CR_MTS_SCHEDULE,

@@ -13,3 +13,22 @@ void gx6xxx_dump(uint32_t *vaddr, int size)
         printk("\n");
     }
 }
+
+void gx6xxx_1_to_1_mapping_chk(struct vcoproc_instance *vcoproc,
+                               paddr_t start, paddr_t end)
+{
+#ifdef GX6XXX_DEBUG
+    struct domain *d = vcoproc->domain;
+    mfn_t mfn;
+    pfn_t i;
+
+    for (i = paddr_to_pfn(start); i < paddr_to_pfn(end + 1); i++)
+    {
+        mfn = p2m_lookup(d, _gfn(i), NULL);
+        if ( i != mfn )
+        {
+            printk("mfn %lx != pfn %lx\n", mfn, i);
+        }
+    }
+#endif
+}
