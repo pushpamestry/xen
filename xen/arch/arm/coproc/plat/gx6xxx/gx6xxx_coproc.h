@@ -27,6 +27,13 @@
 
 #include "gx6xxx_fw.h"
 
+extern bool_t coproc_debug;
+
+#define dev_dbg_gx6xx(dev, fmt, ...) \
+    if (coproc_debug) \
+        dev_dbg(dev, fmt, ## __VA_ARGS__)
+
+
 enum vgx6xxx_state
 {
     /* initialization sequence has started - collecting register values

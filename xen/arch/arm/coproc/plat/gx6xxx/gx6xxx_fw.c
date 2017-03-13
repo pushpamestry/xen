@@ -202,8 +202,8 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     uint64_t *pg64;
     uint64_t ipa;
 
-    dev_dbg(vcoproc->coproc->dev,
-            "%s dev_vaddr %lx\n", __FUNCTION__, dev_vaddr);
+    dev_dbg_gx6xx(vcoproc->coproc->dev,
+                  "%s dev_vaddr %lx\n", __FUNCTION__, dev_vaddr);
     /* get index in the page directory */
     idx = vaddr_to_pde_idx(dev_vaddr);
     BUG_ON(idx >= RGX_MMUCTRL_ENTRIES_PD_VALUE);
@@ -215,8 +215,8 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         return INVALID_MFN;
     }
     clean_and_invalidate_dcache_va_range(pg64, PAGE_SIZE);
-    dev_dbg(vcoproc->coproc->dev,
-            "page directory MFN %lx\n", vinfo->mfn_pd);
+    dev_dbg_gx6xx(vcoproc->coproc->dev,
+                  "page directory MFN %lx\n", vinfo->mfn_pd);
 #if 0
     gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
 #endif
@@ -232,7 +232,8 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     /* FIXME: we only expect 4K pages for now */
     BUG_ON(order != 0);
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-    dev_dbg(vcoproc->coproc->dev, "page table IPA %lx MFN %lx\n", ipa, mfn);
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "page table IPA %lx MFN %lx\n",
+                  ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         dev_err(vcoproc->coproc->dev, "failed to lookup page table\n");
@@ -262,7 +263,8 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
         return INVALID_MFN;
     }
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-    dev_dbg(vcoproc->coproc->dev, "page table entry IPA %lx MFN %lx\n", ipa, mfn);
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "page table entry IPA %lx MFN %lx\n",
+                  ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         dev_err(vcoproc->coproc->dev,
@@ -294,8 +296,8 @@ static inline void *gx6xxx_fw_mmu_map(struct vcoproc_instance *vcoproc,
     offset = fw_meta_dev_vaddr & (PAGE_SIZE - 1);
     /* number of pages this mapping will use */
     nr = PFN_UP(offset + size);
-    dev_dbg(vcoproc->coproc->dev, "mapping dev address %lx (%x), size %zu, nr %d\n",
-            fw_meta_dev_vaddr, meta_addr, size, nr);
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "mapping dev address %lx (%x), size %zu, nr %d\n",
+                  fw_meta_dev_vaddr, meta_addr, size, nr);
     BUG_ON(nr > ARRAY_SIZE(mfn));
 
     for (i = 0; i < nr; i++)
@@ -371,7 +373,8 @@ static int gx6xxx_fw_mmu_init(struct vcoproc_instance *vcoproc,
     /* FIXME: only one page must be in PC which is page directory (PD) */
     ipa = vinfo->reg_val_cr_bif_cat_base0.val;
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-    dev_dbg(vcoproc->coproc->dev, "page catalog IPA %lx MFN %lx\n", ipa, mfn);
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "page catalog IPA %lx MFN %lx\n",
+                  ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         dev_err(vcoproc->coproc->dev, "failed to lookup page catalog\n");
@@ -403,7 +406,8 @@ static int gx6xxx_fw_mmu_init(struct vcoproc_instance *vcoproc,
     }
     /* we have page catalog entry, so we can read page directory */
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
-    dev_dbg(vcoproc->coproc->dev, "page directory IPA %lx MFN %lx\n", ipa, mfn);
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "page directory IPA %lx MFN %lx\n",
+                  ipa, mfn);
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         dev_err(vcoproc->coproc->dev, "failed to lookup page directory\n");
@@ -549,8 +553,9 @@ int gx6xxx_fw_init(struct vcoproc_instance *vcoproc,
      */
     /* convert the address from META address space into what MMU sees */
     fw_init_dev_addr = *((uint32_t *)fw_cfg);
-    dev_dbg(vcoproc->coproc->dev,
-            "found RGXFWIF_INIT structure address: %x\n", fw_init_dev_addr);
+    dev_dbg_gx6xx(vcoproc->coproc->dev,
+                  "found RGXFWIF_INIT structure address: %x\n",
+                  fw_init_dev_addr);
     ret = gx6xxx_fw_map_all(vcoproc, vinfo, fw_init_dev_addr);
     if ( unlikely(ret < 0) )
         return ret;
@@ -608,9 +613,10 @@ void gx6xxx_fw_dump_kccb(struct vcoproc_instance *vcoproc,
             break;
         case RGXFWIF_KCCB_CMD_SYNC:
             cmd_name = "RGXFWIF_KCCB_CMD_SYNC";
-            dev_dbg(vcoproc->coproc->dev, "RGXFWIF_KCCB_CMD_SYNC %x uiUpdateVal %d\n",
-                   cmd->uCmdData.sSyncData.sSyncObjDevVAddr.ui32Addr,
-                   cmd->uCmdData.sSyncData.uiUpdateVal);
+            dev_dbg_gx6xx(vcoproc->coproc->dev,
+                          "RGXFWIF_KCCB_CMD_SYNC %x uiUpdateVal %d\n",
+                          cmd->uCmdData.sSyncData.sSyncObjDevVAddr.ui32Addr,
+                          cmd->uCmdData.sSyncData.uiUpdateVal);
             break;
         case RGXFWIF_KCCB_CMD_SLCFLUSHINVAL:
             cmd_name = "RGXFWIF_KCCB_CMD_SLCFLUSHINVAL";
@@ -629,7 +635,8 @@ void gx6xxx_fw_dump_kccb(struct vcoproc_instance *vcoproc,
                    cmd->eCmdType, read_ofs);
             BUG();
         }
-        dev_dbg(vcoproc->coproc->dev, "KCCB cmd: %s (%d)\n", cmd_name, cmd->eCmdType);
+        dev_dbg_gx6xx(vcoproc->coproc->dev, "KCCB cmd: %s (%d)\n",
+                      cmd_name, cmd->eCmdType);
         read_ofs = (read_ofs + 1) & wrap_mask;
     }
 }
@@ -669,10 +676,8 @@ int gx6xxx_fw_send_kccb_cmd(struct vcoproc_instance *vcoproc,
     cmd_offset = (*expected_offset - nr) &
                  vinfo->fw_kernel_ccb_ctl->ui32WrapMask;
     first_cmd_offset = cmd_offset;
-#ifdef GX6XXX_DEBUG
-    dev_dbg(vcoproc->coproc->dev,
-            "writing %d command(s) at offset %d\n", nr, cmd_offset);
-#endif
+    dev_dbg_gx6xx(vcoproc->coproc->dev,
+                  "writing %d command(s) at offset %d\n", nr, cmd_offset);
     for (i = 0; i < nr; i++)
     {
         kccb[cmd_offset] = cmd[i];
@@ -697,9 +702,8 @@ int gx6xxx_fw_wait_kccb_cmd(struct vcoproc_instance *vcoproc,
         cpu_relax();
         udelay(1);
     };
-#ifdef GX6XXX_DEBUG
-    dev_dbg(vcoproc->coproc->dev, "ui32KCCBCmdsExecuted %d\n",
-            vinfo->fw_trace_buf->ui32KCCBCmdsExecuted);
-#endif
-    return vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == expected_offset ? 0 : -ETIMEDOUT;
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "ui32KCCBCmdsExecuted %d\n",
+                  vinfo->fw_trace_buf->ui32KCCBCmdsExecuted);
+    return vinfo->fw_kernel_ccb_ctl->ui32ReadOffset == expected_offset ?
+                                                       0 : -ETIMEDOUT;
 }

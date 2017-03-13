@@ -54,11 +54,9 @@ static inline void vgx6xxx_set_state(struct vcoproc_instance *vcoproc,
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
 
-#ifdef GX6XXX_DEBUG
-    dev_dbg(vcoproc->coproc->dev,
-            "Domain %d going from %s to %s\n", vcoproc->domain->domain_id,
-            vgx6xxx_state_to_str(vinfo->state), vgx6xxx_state_to_str(state));
-#endif
+    dev_dbg_gx6xx(vcoproc->coproc->dev,
+                  "Domain %d going from %s to %s\n", vcoproc->domain->domain_id,
+                  vgx6xxx_state_to_str(vinfo->state), vgx6xxx_state_to_str(state));
     vinfo->state = state;
 }
 
@@ -87,8 +85,8 @@ static bool gx6xxx_check_start_condition(struct vcoproc_instance *vcoproc,
                         vcoproc->domain->domain_id, ret);
                 BUG();
             }
-            dev_dbg(vcoproc->coproc->dev, "Domain %d start condition met\n",
-                    vcoproc->domain->domain_id);
+            dev_notice(vcoproc->coproc->dev, "Domain %d start condition met\n",
+                       vcoproc->domain->domain_id);
             start = true;
         }
     }
@@ -297,10 +295,8 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     uint32_t irq_status;
 
     spin_lock(&coproc->vcoprocs_lock);
-#ifdef GX6XXX_DEBUG
-    dev_dbg(coproc->dev, "> %s dom %d\n",
-            __FUNCTION__, info->curr->domain->domain_id);
-#endif
+    dev_dbg_gx6xx(coproc->dev, "> %s dom %d\n",
+                  __FUNCTION__, info->curr->domain->domain_id);
 
 #if 1
     irq_status = readl(info->reg_vaddr_irq_status);
@@ -325,21 +321,17 @@ static void gx6xxx_irq_handler(int irq, void *dev,
             dev_err(vcoproc->coproc->dev, "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++ Not delivering IRQ in state %s\n",
                    vgx6xxx_state_to_str(vinfo->state));
 
-#ifdef GX6XXX_DEBUG
-        dev_dbg(coproc->dev, "FW reports IRQ count %d we have %d\n",
-                vinfo->fw_trace_buf->aui32InterruptCount[0],
-                atomic_read(&vinfo->irq_count));
-#endif
+        dev_dbg_gx6xx(coproc->dev, "FW reports IRQ count %d we have %d\n",
+                      vinfo->fw_trace_buf->aui32InterruptCount[0],
+                      atomic_read(&vinfo->irq_count));
     }
     /* from RGX kernel driver (rgxinit.c):
      * we are handling any unhandled interrupts here so align the host
      * count with the FW count
      */
     atomic_set(&vinfo->irq_count, vinfo->fw_trace_buf->aui32InterruptCount[0]);
-#ifdef GX6XXX_DEBUG
-    dev_dbg(coproc->dev, "< %s dom %d\n",
-            __FUNCTION__, info->curr->domain->domain_id);
-#endif
+    dev_dbg_gx6xx(coproc->dev, "< %s dom %d\n",
+                  __FUNCTION__, info->curr->domain->domain_id);
     spin_unlock(&coproc->vcoprocs_lock);
 }
 
@@ -355,9 +347,8 @@ static s_time_t gx6xxx_ctx_switch_from(struct vcoproc_instance *curr)
     s_time_t wait_time;
     unsigned long flags;
 
-#ifdef GX6XXX_DEBUG
-    dev_dbg(curr->coproc->dev, "%s dom %d\n", __FUNCTION__, curr->domain->domain_id);
-#endif
+    dev_dbg_gx6xx(curr->coproc->dev, "%s dom %d\n",
+                  __FUNCTION__, curr->domain->domain_id);
 #if GX6XXX_DEBUG_TEST_KERN_DRV
     if ( curr->domain->domain_id )
         return 0;
@@ -393,9 +384,8 @@ static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)next->priv;
     unsigned long flags;
 
-#ifdef GX6XXX_DEBUG
-    dev_dbg(next->coproc->dev, "%s dom %d\n", __FUNCTION__, next->domain->domain_id);
-#endif
+    dev_dbg_gx6xx(next->coproc->dev, "%s dom %d\n",
+                  __FUNCTION__, next->domain->domain_id);
 #if GX6XXX_DEBUG_TEST_KERN_DRV
     if ( next->domain->domain_id )
         return 0;
@@ -409,10 +399,8 @@ static int gx6xxx_ctx_switch_to(struct vcoproc_instance *next)
         /* flush scheduled work */
         if ( likely(vinfo->reg_cr_mts_schedule_lo_wait_cnt) )
         {
-#ifdef GX6XXX_DEBUG
-            dev_dbg(next->coproc->dev, "have %d scheduled tasks\n",
-                    vinfo->reg_cr_mts_schedule_lo_wait_cnt);
-#endif
+            dev_dbg_gx6xx(next->coproc->dev, "have %d scheduled tasks\n",
+                          vinfo->reg_cr_mts_schedule_lo_wait_cnt);
             do
             {
                 gx6xxx_write32(next->coproc, RGX_CR_MTS_SCHEDULE,

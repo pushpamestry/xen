@@ -486,16 +486,12 @@ static inline int gx6xxx_wait_fw_started(struct vcoproc_instance *vcoproc,
 
     while (retry--)
     {
-#ifdef GX6XXX_DEBUG
-        dev_dbg(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
-                vinfo->fw_init->bFirmwareStarted);
-#endif
+        dev_dbg_gx6xx(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
+                      vinfo->fw_init->bFirmwareStarted);
         ret = gx6xxx_poll_val32((volatile IMG_BOOL *)&vinfo->fw_init->bFirmwareStarted,
                                 expected, 0xFFFFFFFF);
-#ifdef GX6XXX_DEBUG
-        dev_dbg(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
-                vinfo->fw_init->bFirmwareStarted);
-#endif
+        dev_dbg_gx6xx(vcoproc->coproc->dev, "vinfo->fw_init->bFirmwareStarted %d\n",
+                      vinfo->fw_init->bFirmwareStarted);
         if ( !ret )
             break;
     }
@@ -533,15 +529,15 @@ static void gx6xxx_restore_reg_ctx(struct vcoproc_instance *vcoproc,
 
     old_gx6xxx_debug = gx6xxx_debug;
     gx6xxx_debug = false;
-    dev_dbg(vcoproc->coproc->dev, "restoring %d registers\n",
-            vinfo->reg_ctx.count);
 #endif
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "restoring %d registers\n",
+                  vinfo->reg_ctx.count);
     for (i = 0; i < vinfo->reg_ctx.count; i++)
         gx6xxx_write64(vcoproc->coproc, gx6xxx_ctx_reg_offsets[i],
                        vinfo->reg_ctx.regs[i].val);
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "restored %d registers\n",
+                  vinfo->reg_ctx.count);
 #ifdef GX6XXX_DEBUG
-    dev_dbg(vcoproc->coproc->dev, "restored %d registers\n",
-            vinfo->reg_ctx.count);
     gx6xxx_debug = old_gx6xxx_debug;
 #endif
     /* force all clocks on */
@@ -679,9 +675,9 @@ static s_time_t gx6xxx_wait_for_interrupts(struct vcoproc_instance *vcoproc)
     }
     if (!to_us)
     {
-        dev_dbg(vcoproc->coproc->dev, "TIMEDOUT, IRQs: FW %d vs Xen %d\n",
-                vinfo->fw_trace_buf->aui32InterruptCount[0],
-                atomic_read(&vinfo->irq_count));
+        dev_dbg_gx6xx(vcoproc->coproc->dev, "TIMEDOUT, IRQs: FW %d vs Xen %d\n",
+                      vinfo->fw_trace_buf->aui32InterruptCount[0],
+                      atomic_read(&vinfo->irq_count));
         return GX6XXX_WAIT_TIME_US;
     }
     return 0;
@@ -834,115 +830,86 @@ struct gx6xxx_ctx_switch_state gx6xxx_ctx_gpu_stop_states[] =
     {
         .handler = gx6xxx_force_idle,
         .run_condition = gx6xxx_run_if_not_idle_or_off,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_force_idle",
-#endif
     },
     {
         .handler = gx6xxx_wait_kccb,
         .run_condition = gx6xxx_run_if_not_idle_or_off,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_force_idle gx6xxx_wait_kccb",
-#endif
     },
     {
         .handler = gx6xxx_wait_psync,
         .run_condition = gx6xxx_run_if_not_idle_or_off,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_force_idle gx6xxx_wait_psync",
-#endif
     },
     {
         .handler = gx6xxx_force_idle_check,
         .run_condition = gx6xxx_run_if_not_idle_or_off,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_force_idle gx6xxx_force_idle_check",
-#endif
     },
     /* REQUEST POWER OFF */
     {
         .handler = gx6xxx_request_power_off,
         .run_condition = gx6xxx_run_if_not_off,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_request_power_off",
-#endif
     },
     {
         .handler = gx6xxx_wait_kccb,
         .run_condition = gx6xxx_run_if_not_off,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_request_power_off gx6xxx_wait_kccb",
-#endif
     },
     {
         .handler = gx6xxx_wait_psync,
         .run_condition = gx6xxx_run_if_not_off,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_request_power_off gx6xxx_wait_psync",
-#endif
     },
     /* WAIT FOR LAST CHANCE INTERRUPTS */
     {
         .handler = gx6xxx_wait_for_interrupts,
         .run_condition = gx6xxx_run_always,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_wait_for_interrupts",
-#endif
     },
     /* FIXME: SAVE REGISTERS NOW */
     {
         .handler = gx6xxx_save_reg_ctx,
         .run_condition = gx6xxx_run_always,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_save_reg_ctx",
-#endif
     },
     /* WAIT FOR SLC AND SIDEKICK */
     {
         .handler = gx6xxx_wait_for_slc_idle,
         .run_condition = gx6xxx_run_always,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_wait_for_slc_idle",
-#endif
     },
     /* DE-ASSOCIATE ALL THREADS */
     {
         .handler = gx6xxx_deassoc_threads,
         .run_condition = gx6xxx_run_always,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_deassoc_threads",
-#endif
     },
     /* DISABLE ALL THREADS */
     {
         .handler = gx6xxx_disable_threads,
         .run_condition = gx6xxx_run_always,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_disable_threads",
-#endif
     },
     /* WAIT FOR ALL IDLE */
     {
         .handler = gx6xxx_wait_all_idle,
         .run_condition = gx6xxx_run_always,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_wait_all_idle",
-#endif
     },
     /* WAIT FOR FW STOPPED */
     {
         .handler = gx6xxx_wait_fw_stopped,
         .run_condition = gx6xxx_run_always,
-#ifdef GX6XXX_DEBUG
         .name = "gx6xxx_wait_fw_stopped",
-#endif
     },
     {
         NULL
     }
 };
 
-#ifdef GX6XXX_DEBUG
 static const char *power_state_to_str(RGXFWIF_POW_STATE state)
 {
     switch (state)
@@ -960,7 +927,6 @@ static const char *power_state_to_str(RGXFWIF_POW_STATE state)
     }
     return "Unknown";
 }
-#endif
 
 #define RGX_CR_SOFT_RESET_ALL   (RGX_CR_SOFT_RESET_MASKFULL)
 
@@ -1060,18 +1026,18 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
     /* XXX: we CANNOT receive interrupts at this time - scheduler has
      * disabled the interrupts
      */
-#ifdef GX6XXX_DEBUG
-    dev_dbg(vcoproc->coproc->dev, "%s sPowerState is %s\n",
-            __FUNCTION__, power_state_to_str(vinfo->fw_trace_buf->ePowState));
-    dev_dbg(vcoproc->coproc->dev, "%s FW reports %d vs Xen %d IRQs\n",
-           __FUNCTION__, vinfo->fw_trace_buf->aui32InterruptCount[0],
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "%s sPowerState is %s\n",
+                  __FUNCTION__,
+                  power_state_to_str(vinfo->fw_trace_buf->ePowState));
+    dev_dbg_gx6xx(vcoproc->coproc->dev, "%s FW reports %d vs Xen %d IRQs\n",
+                  __FUNCTION__,
+                  vinfo->fw_trace_buf->aui32InterruptCount[0],
            atomic_read(&vinfo->irq_count));
-#endif
     while ( info->state_curr->handler )
     {
+        dev_dbg_gx6xx(vcoproc->coproc->dev, "%s state %s\n", __FUNCTION__,
+                      info->state_curr->name);
 #ifdef GX6XXX_DEBUG_PERF
-        dev_dbg(vcoproc->coproc->dev, "%s state %s\n", __FUNCTION__,
-                info->state_curr->name);
         dbg_time_start = NOW();
 #endif
         /* if there is an interrupt pending return minimally possible
@@ -1096,8 +1062,8 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
             }
             if ( wait_time < 0 )
             {
-                dev_dbg(vcoproc->coproc->dev, "%s wait_time %ld\n", __FUNCTION__,
-                        wait_time);
+                dev_dbg_gx6xx(vcoproc->coproc->dev, "%s wait_time %ld\n",
+                              __FUNCTION__, wait_time);
                 /* step failed */
                 if ( wait_time == -EAGAIN )
                 {
@@ -1113,7 +1079,9 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
         info->state_curr++;
     }
     if ( unlikely(!info->state_curr) )
-        dev_dbg(vcoproc->coproc->dev, "%s GPU stopped =============================================\n", __FUNCTION__);
+        dev_dbg_gx6xx(vcoproc->coproc->dev,
+                      "%s GPU stopped =====================================\n",
+                      __FUNCTION__);
     return 0;
 }
 
@@ -1123,9 +1091,9 @@ int gx6xxx_ctx_init(struct vcoproc_instance *vcoproc,
     int ret;
 
     vinfo->reg_ctx.count = ARRAY_SIZE(gx6xxx_ctx_reg_offsets);
-    dev_dbg(vcoproc->coproc->dev,
-            "allocating register context for %d registers\n",
-            vinfo->reg_ctx.count);
+    dev_dbg_gx6xx(vcoproc->coproc->dev,
+                  "allocating register context for %d registers\n",
+                  vinfo->reg_ctx.count);
     vinfo->reg_ctx.regs = (union reg64_t *)xzalloc_array(struct vgx6xxx_ctx,
                     vinfo->reg_ctx.count);
     if ( !vinfo->reg_ctx.regs )
