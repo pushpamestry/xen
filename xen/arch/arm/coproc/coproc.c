@@ -573,7 +573,7 @@ int __init coproc_register(struct coproc_device *coproc)
     return 0;
 }
 
-bool_t coproc_debug = true;
+bool_t coproc_debug = false;
 
 void coproc_debug_toggle(unsigned char key)
 {
