@@ -34,6 +34,11 @@
 struct vcoproc_instance;
 struct vgx6xxx_info;
 
+/* FIXME: second set of Slave Port debug registers */
+#ifndef RGX_CR_META_SP_MSLVCTRL2
+#define RGX_CR_META_SP_MSLVCTRL2    (0x0A20U)
+#endif
+
 #ifdef GX6XXX_DEBUG
 extern bool gx6xxx_debug;
 

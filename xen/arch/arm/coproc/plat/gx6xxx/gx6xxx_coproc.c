@@ -139,6 +139,9 @@ static bool gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
     case REG_LO32(RGX_CR_META_SP_MSLVCTRL1):
         printk("HANDLE me!!!! LO RGX_CR_META_SP_MSLVCTRL1\n");
         break;
+    case REG_LO32(RGX_CR_META_SP_MSLVCTRL2):
+        printk("HANDLE me!!!! RGX_CR_META_SP_MSLVCTRL2?????\n");
+        break;
     default:
         handled = false;
         break;
