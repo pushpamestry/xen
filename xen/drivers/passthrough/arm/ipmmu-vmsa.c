@@ -35,6 +35,8 @@
 
 #include "io-pgtable.h"
 
+#define CONFIG_DONT_FLUSH_IPMMU_CACHE 1
+
 /* TODO:
  * 1. Optimize xen_domain->lock usage.
  * 2. Show domain_id in every printk which is per Xen domain.
@@ -267,6 +269,9 @@ struct ipmmu_vmsa_domain {
 
 	/* Xen: Domain associated to this configuration */
 	struct domain *d;
+
+	/* Xen: List of devices assigned to this IOMMU domain */
+	struct list_head devices;
 };
 
 struct ipmmu_vmsa_archdata {
@@ -623,6 +628,7 @@ static void ipmmu_ctx_write1(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 		ipmmu_write(domain->mmu, domain->context_id * IM_CTX_SIZE + reg, data);
 }
 
+#if !defined(CONFIG_DONT_FLUSH_IPMMU_CACHE)
 /*
  * Xen: Write the context for both root IPMMU and all cache IPMMUs
  * that assigned to this Xen domain.
@@ -638,6 +644,7 @@ static void ipmmu_ctx_write2(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 
 	ipmmu_ctx_write(domain, reg, data);
 }
+#endif
 
 /* -----------------------------------------------------------------------------
  * TLB and microTLB Management
@@ -659,13 +666,62 @@ static void ipmmu_tlb_sync(struct ipmmu_vmsa_domain *domain)
 	}
 }
 
+#if defined(CONFIG_DONT_FLUSH_IPMMU_CACHE)
+/*
+ * Xen: Flush the microTLB.
+ */
+static void ipmmu_utlb_flush(struct ipmmu_vmsa_domain *domain,
+			       unsigned int utlb)
+{
+	struct ipmmu_vmsa_device *mmu = domain->mmu;
+	unsigned int offset;
+	u32 reg;
+
+	offset = (utlb < 32) ? IMUCTR(utlb) : IMUCTR2(utlb - 32);
+	reg = ipmmu_read(mmu, offset);
+	reg |= IMUCTR_FLUSH;
+	ipmmu_write(mmu, offset, reg);
+}
+
+/*
+ * Xen: Flush all microTLBs that are involved in MMU translation
+ * for this Xen domain.
+ */
+static void ipmmu_utlb_invalidate(struct ipmmu_vmsa_domain *domain)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(domain->d)->arch.priv;
+	struct ipmmu_vmsa_archdata *archdata;
+	struct iommu_domain *io_domain;
+	unsigned int i;
+
+	/* Loop through all IOMMU domains for this Xen domain. */
+	list_for_each_entry(io_domain, &xen_domain->contexts, list) {
+		/* Loop through all devices assigned to this IOMMU domain. */
+		list_for_each_entry(archdata, &to_vmsa_domain(io_domain)->devices, list) {
+			for (i = 0; i < archdata->num_utlbs; ++i)
+				ipmmu_utlb_flush(to_vmsa_domain(io_domain), archdata->utlbs[i]);
+		}
+	}
+}
+#endif
+
 static void ipmmu_tlb_invalidate(struct ipmmu_vmsa_domain *domain)
 {
 	u32 reg;
 
 	reg = ipmmu_ctx_read(domain, IMCTR);
 	reg |= IMCTR_FLUSH;
+/*
+ * Xen: The root IPMMU is needed to be flushed in both cases.
+ * Flush the microTLBs if following config is set, otherwise - flush the
+ * cache IPMMUs the microTLBs connected to.
+ */
+#if defined(CONFIG_DONT_FLUSH_IPMMU_CACHE)
+	ipmmu_ctx_write(domain, IMCTR, reg);
+	ipmmu_utlb_invalidate(domain);
+#else
 	ipmmu_ctx_write2(domain, IMCTR, reg);
+#endif
 
 	ipmmu_tlb_sync(domain);
 }
@@ -853,7 +909,8 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	 * software management as we have no use for it. Flush the TLB as
 	 * required when modifying the context registers.
 	 */
-	ipmmu_ctx_write2(domain, IMCTR,
+	/* Xen: Enable the context for the root IPMMU only. */
+	ipmmu_ctx_write(domain, IMCTR,
 			 IMCTR_INTEN | IMCTR_FLUSH | IMCTR_MMUEN);
 
 	return 0;
@@ -884,7 +941,8 @@ static void ipmmu_domain_destroy_context(struct ipmmu_vmsa_domain *domain)
 	 *
 	 * TODO: Is TLB flush really needed ?
 	 */
-	ipmmu_ctx_write2(domain, IMCTR, IMCTR_FLUSH);
+	/* Xen: Disable the context for the root IPMMU only. */
+	ipmmu_ctx_write(domain, IMCTR, IMCTR_FLUSH);
 	ipmmu_tlb_sync(domain);
 
 #ifdef CONFIG_RCAR_DDR_BACKUP
@@ -1084,6 +1142,11 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 		return ret;
 
 
+	/*
+	 * Xen: Add the new device to the IOMMU domain.
+	 */
+	list_add(&archdata->list, &domain->devices);
+
 	for (i = 0; i < archdata->num_utlbs; ++i)
 		ipmmu_utlb_enable(domain, archdata->utlbs[i]);
 
@@ -1096,6 +1159,11 @@ static void ipmmu_detach_device(struct iommu_domain *io_domain,
 	struct ipmmu_vmsa_archdata *archdata = to_archdata(dev);
 	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
 	unsigned int i;
+
+	/*
+	 * Xen: Remove the device from the IOMMU domain.
+	 */
+	list_del(&archdata->list);
 
 	for (i = 0; i < archdata->num_utlbs; ++i)
 		ipmmu_utlb_disable(domain, archdata->utlbs[i]);
@@ -2252,6 +2320,7 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 			goto out;
 		}
 		spin_lock_init(&domain->lock);
+		INIT_LIST_HEAD(&domain->devices);
 
 		domain->d = d;
 		domain->context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
@@ -2365,6 +2434,7 @@ static int ipmmu_vmsa_alloc_page_table(struct domain *d)
 
 		spin_lock_init(&domain->lock);
 		INIT_LIST_HEAD(&domain->io_domain.list);
+		INIT_LIST_HEAD(&domain->devices);
 		domain->d = d;
 
 		root = ipmmu_find_root(NULL);
