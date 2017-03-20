@@ -138,9 +138,23 @@ static bool gx6xxx_on_reg_write(uint32_t offset, uint32_t val,
         break;
     case REG_LO32(RGX_CR_META_SP_MSLVCTRL1):
         printk("HANDLE me!!!! LO RGX_CR_META_SP_MSLVCTRL1\n");
+        WARN();
         break;
     case REG_LO32(RGX_CR_META_SP_MSLVCTRL2):
         printk("HANDLE me!!!! RGX_CR_META_SP_MSLVCTRL2?????\n");
+        WARN();
+        break;
+    case 0xA28:
+        printk("HANDLE me!!!! 0xA28?????\n");
+        WARN();
+        break;
+    case 0x0A30:
+        printk("HANDLE me!!!! 0x0A30?????\n");
+        WARN();
+        break;
+    case 0x0A38:
+        printk("HANDLE me!!!! 0x0A38?????\n");
+        WARN();
         break;
     default:
         handled = false;
