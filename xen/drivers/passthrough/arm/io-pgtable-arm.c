@@ -361,6 +361,7 @@ static void __arm_lpae_set_pte(arm_lpae_iopte *ptep, arm_lpae_iopte pte,
 	smp_mb();
 	*ptep = pte;
 	smp_mb();
+	clean_dcache(*ptep);
 }
 
 static int __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
