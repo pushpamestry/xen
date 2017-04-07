@@ -361,7 +361,8 @@ static void __arm_lpae_set_pte(arm_lpae_iopte *ptep, arm_lpae_iopte pte,
 	smp_mb();
 	*ptep = pte;
 	smp_mb();
-	clean_dcache(*ptep);
+	/* Create condition for page fault to occur. */
+	//clean_dcache(*ptep);
 }
 
 static int __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
@@ -767,6 +768,8 @@ static phys_addr_t arm_lpae_iova_to_phys(struct io_pgtable_ops *ops,
 
 		/* Grab the IOPTE we're interested in */
 		pte = *(ptep + ARM_LPAE_LVL_IDX(iova, lvl, data));
+		/* repair what have already broken. */
+		clean_dcache_va_range(ptep, 4096);
 		unmap_domain_page(ptep);
 
 		/* Valid entry? */
