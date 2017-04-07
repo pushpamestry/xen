@@ -965,6 +965,21 @@ static void ipmmu_domain_destroy_context(struct ipmmu_vmsa_domain *domain)
 	domain->context_id = domain->root->num_ctx;
 }
 
+static struct tasklet error_tasklet;
+static u32 iova_save;
+phys_addr_t ipmmu_iova_to_phys(struct iommu_domain *io_domain, dma_addr_t iova);
+
+static void error_recovery(unsigned long data)
+{
+	struct ipmmu_vmsa_domain *domain = (struct ipmmu_vmsa_domain *)data;
+	phys_addr_t paddr = ipmmu_iova_to_phys(&domain->io_domain, iova_save);
+
+	printk("IOVA %#x PA %#lx\n", iova_save, paddr);
+
+	ipmmu_tlb_invalidate(domain);
+}
+
+
 /* -----------------------------------------------------------------------------
  * Fault Handling
  */
@@ -983,6 +998,7 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 		return IRQ_NONE;
 
 	iova = ipmmu_ctx_read(domain, IMEAR);
+	iova_save = iova;
 
 	/*
 	 * Clear the error status flags. Unlike traditional interrupt flag
@@ -1015,6 +1031,9 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 	dev_err_ratelimited(mmu->dev,
 			"d%d: Unhandled fault: status 0x%08x iova 0x%08x\n",
 			domain->d->domain_id, status, iova);
+
+	if (domain->d->domain_id == 0)
+		tasklet_schedule(&error_tasklet);
 
 	return IRQ_HANDLED;
 }
@@ -2464,6 +2483,9 @@ static int ipmmu_vmsa_alloc_page_table(struct domain *d)
 		}
 		xen_domain->base_context = &domain->io_domain;
 		spin_unlock(&xen_domain->lock);
+
+		if (d->domain_id == 0)
+			tasklet_init(&error_tasklet, error_recovery, (unsigned long)domain);
 	}
 
 	return 0;
